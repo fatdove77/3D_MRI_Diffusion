@@ -5,9 +5,11 @@ diffusion_img_size: ???
 diffusion_depth_size: ???
 diffusion_num_channels: ???
 dim_mults: ???
-results_folder: /data/home/firas/Desktop/work/other_groups/medicaldiffusion/checkpoints/ddpm/
+csv_path: /home/jing/MRI_Diffusion/medicaldiffusion/data/data.csv
+results_folder: /home/jing/MRI_Diffusion/medicaldiffusion/checkpoints/ddpm/
 results_folder_postfix: ''
 load_milestone: False
+
 
 batch_size: 40
 num_workers: 20

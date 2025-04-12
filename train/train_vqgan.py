@@ -5,11 +5,13 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 from ddpm.diffusion import default
-from vq_gan_3d.model import VQGAN
+from vq_gan_3d.model import VQGAN 
 from train.callbacks import ImageLogger, VideoLogger
 from train.get_dataset import get_dataset
 import hydra
 from omegaconf import DictConfig, open_dict
+import torch
+torch.backends.cuda.matmul.allow_tf32 = False
 
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
@@ -72,9 +74,11 @@ def run(cfg: DictConfig):
     accelerator = None
     if cfg.model.gpus > 1:
         accelerator = 'ddp'
+        
 
     trainer = pl.Trainer(
-        gpus=cfg.model.gpus,
+        accelerator='gpu',  # 使用'gpu'而不是None
+        devices=[0],  # 明确指定设备
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
         resume_from_checkpoint=cfg.model.resume_from_checkpoint,
@@ -83,7 +87,6 @@ def run(cfg: DictConfig):
         max_epochs=cfg.model.max_epochs,
         precision=cfg.model.precision,
         gradient_clip_val=cfg.model.gradient_clip_val,
-        accelerator=accelerator,
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)

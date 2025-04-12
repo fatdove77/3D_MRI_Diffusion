@@ -1,4 +1,5 @@
 name: ADNI
-root_dir: /data/ADNI/ADNI/
+root_dir: /home/jing/MRI_Diffusion/medicaldiffusion/data/ADNI/ADNI
+csv_path: /home/jing/MRI_Diffusion/medicaldiffusion/data/data.csv  # new input 
 image_channels: 1
 augmentation: True

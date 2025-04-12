@@ -140,40 +140,43 @@ class ADNIDataset(Dataset):
         
         # 如果需要调整尺寸以适应网络(从128调整到64)
         # 如果不需要，可以移除这部分
-        sp_size = 128  # 或者根据你的网络需求设置为128
-        if current_size != sp_size:
-            img_data = resize(img_data, (sp_size, sp_size, sp_size), mode='constant')
+        # sp_size = 128  # 或者根据你的网络需求设置为128
+        # if current_size != sp_size:
+        #     img_data = resize(img_data, (sp_size, sp_size, sp_size), mode='constant')
         
         # 数据增强(如果需要)
-        if self.augmentation:
-            random_n = torch.rand(1)
-            random_i = 0.3*torch.rand(1)[0]+0.7
-            if random_n[0] > 0.5:
-                img_data = np.flip(img_data, 0)
-            img_data = img_data*random_i.data.cpu().numpy()
+        # if self.augmentation:
+        #     random_n = torch.rand(1)
+        #     random_i = 0.3*torch.rand(1)[0]+0.7
+        #     if random_n[0] > 0.5:
+        #         img_data = np.flip(img_data, 0)
+        #     img_data = img_data*random_i.data.cpu().numpy()
         
         # 转换为张量并规范化
-        imageout = torch.from_numpy(img_data).float().view(1, sp_size, sp_size, sp_size)
-        imageout = imageout*2-1  # 规范化到[-1,1]范围
+        imageout = torch.from_numpy(img_data).float()  ##这里可以不规范化 选一个别的方法，因为数据已经修改好了🚧
+        
+        if len(imageout.shape) == 3:  # 如果是3D图像，添加通道维度
+            imageout = imageout.unsqueeze(0)  # 在第一个维度添加通道
+            # imageout = imageout*2-1  # 规范化到[-1,1]范围    ##已经被normalize过 🚧
         
         return {'data': imageout, 'description': description}
     
     def debug_info(self, num_samples=3):
-        """打印数据集的调试信息"""
-        print(f"数据集信息:")
-        print(f"  样本总数: {len(self)}")
-        print(f"  根目录: {self.root_dir}")
-        print(f"  是否使用数据增强: {self.augmentation}")
+        # """打印数据集的调试信息"""
+        print(f"dataset infomation:")
+        print(f" numeber of samples : {len(self)}")
+        print(f"  root_dir: {self.root_dir}")
+        print(f"  augment: {self.augmentation}")
         
         if hasattr(self, 'samples') and self.samples:
-            print("\n样本详情:")
+            print("\details:")
             for i in range(min(num_samples, len(self))):
                 sample_info = self.samples[i]
                 data_item = self[i]
                 
-                print(f"\n样本 {i}:")
-                print(f"  图像路径: {sample_info['image_path']}")
-                print(f"  描述: {sample_info['description']}")
-                print(f"  图像形状: {data_item['data'].shape}")
-                print(f"  图像类型: {data_item['data'].dtype}")
-                print(f"  图像值范围: {data_item['data'].min().item()} 到 {data_item['data'].max().item()}")
+                print(f"\sample {i}:")
+                print(f"  dir: {sample_info['image_path']}")
+                print(f"  des: {sample_info['description']}")
+                print(f"  shape: {data_item['data'].shape}")
+                print(f"  type: {data_item['data'].dtype}")
+                print(f"  range: {data_item['data'].min().item()} to {data_item['data'].max().item()}")

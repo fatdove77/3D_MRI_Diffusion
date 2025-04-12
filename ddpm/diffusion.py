@@ -3,6 +3,11 @@
 import math
 import copy
 import torch
+
+# import torch
+import clip
+from PIL import Image
+
 from torch import nn, einsum
 import torch.nn.functional as F
 from functools import partial
@@ -979,6 +984,15 @@ class Trainer(object):
         num_workers=20,
     ):
         super().__init__()
+        
+        # import clip model 
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
+        #freeze the parms
+        for param in self.clip_model.parameters():
+            param.requires_grad = False
+        
+        
         self.model = diffusion_model
         self.ema = EMA(ema_decay)
         self.ema_model = copy.deepcopy(self.model)
@@ -1074,7 +1088,9 @@ class Trainer(object):
         while self.step < self.train_num_steps:
             for i in range(self.gradient_accumulate_every):
                 data = next(self.dl)['data'].cuda()
-
+                description = next(self.dl)['description']
+                print("trainer data ✅✅✅✅✅:",data)
+                print("trainer description ✅✅✅✅✅:",description)
                 with autocast(enabled=self.amp):
                     loss = self.model(
                         data,

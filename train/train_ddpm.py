@@ -69,7 +69,7 @@ def run(cfg: DictConfig):
     if cfg.model.load_milestone:
         trainer.load(cfg.model.load_milestone)
 
-    # trainer.train()
+    trainer.train()
 
 
 if __name__ == '__main__':

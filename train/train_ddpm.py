@@ -9,6 +9,7 @@ from train.get_dataset import get_dataset
 import torch
 import os
 from ddpm.unet import UNet
+from vq_gan_3d.model.vqgan import VQGAN
 
 
 # NCCL_P2P_DISABLE=1 accelerate launch train/train_ddpm.py
@@ -19,19 +20,56 @@ def run(cfg: DictConfig):
     with open_dict(cfg):
         cfg.model.results_folder = os.path.join(
             cfg.model.results_folder, cfg.dataset.name, cfg.model.results_folder_postfix)
-
+    
+    # 获取数据集
+    train_dataset, *_ = get_dataset(cfg)
+    sample_loader = torch.utils.data.DataLoader(train_dataset, batch_size=1)
+    sample_batch = next(iter(sample_loader))
+    sample_data = sample_batch['data'].cuda()
+    
+    print(f"原始数据形状: {sample_data.shape}")
+    
+    # 加载VQGAN并获取编码后的形状
+    vqgan = VQGAN.load_from_checkpoint(cfg.model.vqgan_ckpt).cuda()
+    vqgan.eval()
+    
+    with torch.no_grad():
+        encoded = vqgan.encode(sample_data, quantize=False, include_embeddings=True)
+        print(f"VQGAN编码后形状: {encoded.shape}")
+    
+    # 动态设置尺寸参数
+    _, channels, depth, height, width = encoded.shape
+    
+    # 计算合适的 groups 值
+    original_groups = 8  # 默认组数
+    groups = min(channels, original_groups)
+    while channels % groups != 0 and groups > 1:
+        groups -= 1
+        
+    print(f"使用参数: channels={channels}, groups={groups}")
+    
+    # 确保参数不为None
+    with open_dict(cfg):
+        if cfg.model.diffusion_img_size is None:
+            cfg.model.diffusion_img_size = max(height, width)
+            print(f"自动设置 diffusion_img_size = {cfg.model.diffusion_img_size}")
+            
+        if cfg.model.diffusion_depth_size is None:
+            cfg.model.diffusion_depth_size = depth
+            print(f"自动设置 diffusion_depth_size = {cfg.model.diffusion_depth_size}")
+            
+        if cfg.model.diffusion_num_channels is None:
+            cfg.model.diffusion_num_channels = channels
+            print(f"自动设置 diffusion_num_channels = {cfg.model.diffusion_num_channels}")
+    
+    # 现在创建模型，使用确保不为None的参数
     if cfg.model.denoising_fn == 'Unet3D':
         model = Unet3D(
             dim=cfg.model.diffusion_img_size,
             dim_mults=cfg.model.dim_mults,
             channels=cfg.model.diffusion_num_channels,
+            resnet_groups=groups,  # 使用计算出的组数
         ).cuda()
-    # elif cfg.model.denoising_fn == 'UNet':
-    #     model = UNet(
-    #         in_ch=cfg.model.diffusion_num_channels,
-    #         out_ch=cfg.model.diffusion_num_channels,
-    #         spatial_dims=3
-    #     ).cuda()
     else:
         raise ValueError(f"Model {cfg.model.denoising_fn} doesn't exist")
 
@@ -42,10 +80,9 @@ def run(cfg: DictConfig):
         num_frames=cfg.model.diffusion_depth_size,
         channels=cfg.model.diffusion_num_channels,
         timesteps=cfg.model.timesteps,
-        # sampling_timesteps=cfg.model.sampling_timesteps,
         loss_type=cfg.model.loss_type,
-        # objective=cfg.objective
     ).cuda()
+    
 
     train_dataset, *_ = get_dataset(cfg)
 

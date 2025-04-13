@@ -1,9 +1,9 @@
 vqgan_ckpt: ??? 
 
 # Have to be derived from VQ-GAN Latent space dimensions
-diffusion_img_size: ???
-diffusion_depth_size: ???
-diffusion_num_channels: ???
+diffusion_img_size: null
+diffusion_depth_size: null
+diffusion_num_channels: null
 dim_mults: ???
 csv_path: /home/jing/MRI_Diffusion/medicaldiffusion/data/data.csv
 results_folder: /home/jing/MRI_Diffusion/medicaldiffusion/checkpoints/ddpm/

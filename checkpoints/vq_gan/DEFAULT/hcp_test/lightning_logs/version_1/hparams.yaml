@@ -1,0 +1,43 @@
+cfg:
+  dataset:
+    name: DEFAULT
+    root_dir: data/HCP/
+    csv_path: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/data/HCP/HCP.csv
+    image_channels: 1
+    augmentation: true
+  model:
+    seed: 1234
+    batch_size: 1
+    num_workers: 2
+    gpus: 1
+    accumulate_grad_batches: 1
+    default_root_dir: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/checkpoints/vq_gan/DEFAULT/hcp_test
+    default_root_dir_postfix: hcp_test
+    resume_from_checkpoint: null
+    max_steps: -1
+    max_epochs: -1
+    precision: 16
+    gradient_clip_val: 1.0
+    embedding_dim: 256
+    n_codes: 2048
+    n_hiddens: 240
+    lr: 9.375e-06
+    downsample:
+    - 4
+    - 4
+    - 4
+    disc_channels: 64
+    disc_layers: 3
+    discriminator_iter_start: 50000
+    disc_loss_type: hinge
+    image_gan_weight: 1.0
+    video_gan_weight: 1.0
+    l1_weight: 4.0
+    gan_feat_weight: 0.0
+    perceptual_weight: 0.0
+    i3d_feat: false
+    restart_thres: 1.0
+    no_random_restart: false
+    norm_type: group
+    padding_type: replicate
+    num_groups: 32

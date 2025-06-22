@@ -130,13 +130,13 @@ dmypy.json
 
 results*/
 cache/
-vqgan_checkpoints*/
+# vqgan_checkpoints*/
 debug/
 
 __pycache__/
 **/__pycache__/
-lightning_logs/
-.ipynb_checkpoints/
+# lightning_logs/
+# .ipynb_checkpoints/
 *.mp4
 *.egg-info
 jobs
@@ -144,10 +144,10 @@ core
 .pyc
 .idea/
 results*/
-checkpoints*/
+# checkpoints*/
 debug*/
 wandb*/
-*.nii
+# *.nii
 cache/
 outputs/
 

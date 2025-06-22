@@ -1,3 +1,5 @@
 name: DEFAULT
-root_dir: ???
+root_dir: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/data/HCP
+csv_path: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/data/HCP/HCP.csv  # new input 
 image_channels: 1
+augmentation: True

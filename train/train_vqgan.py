@@ -81,7 +81,7 @@ def run(cfg: DictConfig):
         devices=[0],  # 明确指定设备
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
-        resume_from_checkpoint=cfg.model.resume_from_checkpoint,
+        resume_from_checkpoint=cfg.model.resume_from_checkpoint, 
         callbacks=callbacks,
         max_steps=cfg.model.max_steps,
         max_epochs=cfg.model.max_epochs,

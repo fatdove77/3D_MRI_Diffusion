@@ -1,0 +1,49 @@
+# --- Core Deep Learning Libraries ---
+# 保持torch版本稳定，因为代码很可能依赖它
+pytorch-lightning>=1.6.4,<1.8.0  # 给pip一些灵活性
+torchio==0.18.80
+
+# --- Data and Numerics ---
+numpy
+pandas
+scikit-image
+scikit-learn
+SimpleITK
+
+# --- MRI/NIfTI Handling ---
+nibabel
+nilearn
+pydicom
+
+# --- Utilities and Config ---
+hydra-core==1.2.0
+omegaconf==2.2.3
+tqdm
+einops
+einops-exts
+ema-pytorch
+
+# --- Text/CLIP handling ---
+ftfy
+regex
+
+transformers
+
+# --- Visualization ---
+matplotlib
+imageio
+imageio-ffmpeg
+scikit-video
+
+
+# ... (之前的所有库) ...
+
+# --- Text/CLIP handling ---
+ftfy
+regex
+transformers
+
+git+https://github.com/openai/CLIP.git
+
+
+rotary-embedding-torch

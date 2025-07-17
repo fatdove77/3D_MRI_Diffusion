@@ -78,7 +78,7 @@ def run(cfg: DictConfig):
 
     trainer = pl.Trainer(
         accelerator='gpu',  # 使用'gpu'而不是None
-        devices=[0],  # 明确指定设备
+        devices=cfg.model.gpus,  # 明确指定设备
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
         resume_from_checkpoint=cfg.model.resume_from_checkpoint, 

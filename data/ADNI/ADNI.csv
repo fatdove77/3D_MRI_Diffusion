@@ -1,0 +1,4 @@
+image_path,description
+/home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/002_S_0295-m06-1_T1_AR.nii.gz,"this is a male brain mri , age is 25"
+/home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/002_S_0295-m12-1_T1_AR.nii.gz,"this is a male brain mri , age is 25"
+/home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/002_S_0295-m24-2_T1_AR.nii.gz,"this is a male brain mri , age is 25"

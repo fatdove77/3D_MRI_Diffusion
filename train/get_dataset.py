@@ -36,6 +36,7 @@ def get_dataset(cfg):
         sampler = None
         train_dataset.debug_info(5) # 这个调试信息很有用，可以暂时保留
         return train_dataset, val_dataset, sampler
+    
     if cfg.dataset.name == 'ADNI':
         # 检查配置中是否指定了CSV路径
         csv_path = cfg.dataset.get('csv_path', None)

@@ -1,38 +1,76 @@
-# 针对3D MRI数据的最优配置
-seed: 1234
-batch_size: 4                 # H100显存充足，但3D数据大，保守选择
-num_workers: 12               # H100服务器通常CPU核心多，可以提高数据加载效率
+# # 针对3D MRI数据的最优配置
+# seed: 1234
+# batch_size: 4                 # H100显存充足，但3D数据大，保守选择
+# num_workers: 12               # H100服务器通常CPU核心多，可以提高数据加载效率
 
-gpus: 4                       # 先单GPU稳定训练
-accumulate_grad_batches: 8    # 有效batch_size = 2×8 = 16，适合VQ-GAN训练
-default_root_dir: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/checkpoints/vq_gan/
+# gpus: 4                       # 先单GPU稳定训练
+# accumulate_grad_batches: 8    # 有效batch_size = 2×8 = 16，适合VQ-GAN训练
+# default_root_dir: /home/jz97/mri_diffusion/3D_MRI_Diffusion/checkpoints/vq_gan/
+# default_root_dir_postfix: ''
+# resume_from_checkpoint:
+# max_steps: 50000              # 对于小数据集，50k步足够看到效果
+# max_epochs: 10  #200               # 小数据集需要更多epoch
+# precision: 16
+# gradient_clip_val: 1.0
+
+# # 模型架构 - 平衡质量和效率
+# embedding_dim: 16             # 足够的表示能力
+# n_codes: 4096                 # 适中的码本大小
+# n_hiddens: 32                 # 比原来的16增加，提升质量
+# lr: 3e-4
+# downsample: [2, 2, 2]         # 保持较高分辨率，重要！
+# disc_channels: 64
+# disc_layers: 3
+# discriminator_iter_start: 8000  # 适中的启动时机
+# disc_loss_type: hinge
+
+# # 损失权重 - 平衡重建和生成质量
+# image_gan_weight: 1.0
+# video_gan_weight: 1.0
+# l1_weight: 4.0                # 保证基本重建质量
+# gan_feat_weight: 4.0          # 提升细节质量
+# perceptual_weight: 4.0        # 提升视觉质量
+# i3d_feat: False
+# restart_thres: 1.0
+# no_random_restart: False
+# norm_type: group
+# padding_type: replicate
+# num_groups: 8                 # 8能整除32
+
+
+
+seed: 1234
+batch_size: 1  # 匹配你的实际使用
+num_workers: 4  # 减少worker数量
+
+gpus: 1
+accumulate_grad_batches: 4  # 匹配你的实际使用
+default_root_dir: ./checkpoints/vq_gan/  # 修改为相对路径
 default_root_dir_postfix: ''
 resume_from_checkpoint:
-max_steps: 50000              # 对于小数据集，50k步足够看到效果
-max_epochs: 10  #200               # 小数据集需要更多epoch
+max_steps: 100000  # 设置合理的最大步数，而不是-1
+max_epochs: 10   # 设置合理的最大轮数
 precision: 16
 gradient_clip_val: 1.0
 
-# 模型架构 - 平衡质量和效率
-embedding_dim: 16             # 足够的表示能力
-n_codes: 4096                 # 适中的码本大小
-n_hiddens: 32                 # 比原来的16增加，提升质量
+# 模型参数 - 适用于内存限制的情况
+embedding_dim: 8      # 从256减少到8
+n_codes: 8192         # 从2048增加到8192（但比原来的16384小）
+n_hiddens: 16         # 从240大幅减少到16
 lr: 3e-4
-downsample: [2, 2, 2]         # 保持较高分辨率，重要！
+downsample: [4, 4, 4] # 保持不变
 disc_channels: 64
 disc_layers: 3
-discriminator_iter_start: 8000  # 适中的启动时机
+discriminator_iter_start: 5000  # 从50000减少到5000，更早开始判别器训练
 disc_loss_type: hinge
-
-# 损失权重 - 平衡重建和生成质量
 image_gan_weight: 1.0
 video_gan_weight: 1.0
-l1_weight: 4.0                # 保证基本重建质量
-gan_feat_weight: 4.0          # 提升细节质量
-perceptual_weight: 4.0        # 提升视觉质量
+l1_weight: 4.0
+gan_feat_weight: 4.0      # 从0.0改为4.0，启用特征匹配损失
+perceptual_weight: 4.0    # 从0.0改为4.0，启用感知损失
 i3d_feat: False
 restart_thres: 1.0
 no_random_restart: False
 norm_type: group
 padding_type: replicate
-num_groups: 8                 # 8能整除32
+num_groups: 8  # 从32减少到8，适配更小的n_hiddens

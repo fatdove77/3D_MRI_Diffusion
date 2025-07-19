@@ -5,10 +5,10 @@ from typing import Optional
 import argparse
 
 
-PREPROCESSING_TRANSORMS = tio.Compose([
-    tio.RescaleIntensity(out_min_max=(-1, 1)),
-    tio.CropOrPad(target_shape=(256, 256, 32))
-])
+# PREPROCESSING_TRANSORMS = tio.Compose([
+#     tio.RescaleIntensity(out_min_max=(-1, 1)),
+#     tio.CropOrPad(target_shape=(256, 256, 32))
+# ])
 
 TRAIN_TRANSFORMS = tio.Compose([
     tio.RandomFlip(axes=(1), flip_probability=0.5),
@@ -19,7 +19,7 @@ class DEFAULTDataset(Dataset):
     def __init__(self, root_dir: str):
         super().__init__()
         self.root_dir = root_dir
-        self.preprocessing = PREPROCESSING_TRANSORMS
+        # self.preprocessing = PREPROCESSING_TRANSORMS
         self.transforms = TRAIN_TRANSFORMS
         self.file_paths = self.get_data_files()
 

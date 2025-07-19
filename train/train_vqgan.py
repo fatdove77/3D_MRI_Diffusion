@@ -11,6 +11,11 @@ from train.get_dataset import get_dataset
 import hydra
 from omegaconf import DictConfig, open_dict
 import torch
+
+# 修复PyTorch 2.6的weights_only问题
+import torch.serialization
+torch.serialization.add_safe_globals([DictConfig])
+
 torch.backends.cuda.matmul.allow_tf32 = False
 
 

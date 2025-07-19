@@ -1,37 +1,35 @@
 seed: 1234
-batch_size: 30
-num_workers: 30
+batch_size: 4  # 匹配你的实际使用
+num_workers: 4  # 减少worker数量
 
 gpus: 1
-accumulate_grad_batches: 1
+accumulate_grad_batches: 4  # 匹配你的实际使用
 default_root_dir: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/checkpoints/vq_gan/
 default_root_dir_postfix: ''
 resume_from_checkpoint:
-max_steps: -1
-max_epochs: -1
+max_steps: 100000  # 设置合理的最大步数，而不是-1
+max_epochs: 100   # 设置合理的最大轮数
 precision: 16
 gradient_clip_val: 1.0
 
-
-embedding_dim: 256
-n_codes: 2048
-n_hiddens: 240
+# 模型参数 - 适用于内存限制的情况
+embedding_dim: 8      # 从256减少到8
+n_codes: 8192         # 从2048增加到8192（但比原来的16384小）
+n_hiddens: 16         # 从240大幅减少到16
 lr: 3e-4
-downsample: [4, 4, 4]
+downsample: [4, 4, 4] # 保持不变
 disc_channels: 64
 disc_layers: 3
-discriminator_iter_start: 50000
+discriminator_iter_start: 5000  # 从50000减少到5000，更早开始判别器训练
 disc_loss_type: hinge
 image_gan_weight: 1.0
 video_gan_weight: 1.0
 l1_weight: 4.0
-gan_feat_weight: 0.0
-perceptual_weight: 0.0
+gan_feat_weight: 4.0      # 从0.0改为4.0，启用特征匹配损失
+perceptual_weight: 4.0    # 从0.0改为4.0，启用感知损失
 i3d_feat: False
 restart_thres: 1.0
 no_random_restart: False
 norm_type: group
 padding_type: replicate
-num_groups: 32
-
-
+num_groups: 8  # 从32减少到8，适配更小的n_hiddens

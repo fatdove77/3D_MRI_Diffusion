@@ -16,6 +16,10 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
 def run(cfg: DictConfig):
+    # 添加安全的全局变量
+    import torch.serialization
+    torch.serialization.add_safe_globals([DictConfig])
+    
     pl.seed_everything(cfg.model.seed)
 
     train_dataset, val_dataset, sampler = get_dataset(cfg)

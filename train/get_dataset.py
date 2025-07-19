@@ -3,17 +3,6 @@ from torch.utils.data import WeightedRandomSampler
 
 # from dataset import ADNIDataset # change
 from dataset import CustomDataset # new dataloader
-# def get_dataset(cfg):
-#     if cfg.dataset.name == 'ADNI':
-#         train_dataset = ADNIDataset(
-#             root_dir=cfg.dataset.root_dir, augmentation=True)
-#         val_dataset = ADNIDataset(
-#             root_dir=cfg.dataset.root_dir, augmentation=True)
-#         sampler = None
-#         return train_dataset, val_dataset, sampler
-#     raise ValueError(f'{cfg.dataset.name} Dataset is not available')
-
-
 
 #return image and text input
 def get_dataset(cfg):
@@ -22,36 +11,51 @@ def get_dataset(cfg):
         csv_path = cfg.dataset.get('csv_path', None)
         if csv_path is None:
             raise ValueError("csv_path must be specified in the config for this dataset.")
-            
-        train_dataset = CustomDataset( # 使用新的类名
-            root_dir=cfg.dataset.root_dir, 
-            csv_path=csv_path,
-            augmentation=cfg.dataset.get('augmentation', False))
         
-        val_dataset = CustomDataset( # 使用新的类名
+        # 获取目标尺寸配置，默认为(64, 64, 64)
+        target_size = cfg.dataset.get('target_size', (64, 64, 64))
+        # 获取缩放模式，默认为'pad'
+        resize_mode = cfg.dataset.get('resize_mode', 'pad')
+        
+        train_dataset = CustomDataset(
             root_dir=cfg.dataset.root_dir, 
             csv_path=csv_path,
-            augmentation=False)
+            augmentation=cfg.dataset.get('augmentation', False),
+            target_size=target_size,
+            resize_mode=resize_mode)
+        
+        val_dataset = CustomDataset(
+            root_dir=cfg.dataset.root_dir, 
+            csv_path=csv_path,
+            augmentation=False,
+            target_size=target_size,
+            resize_mode=resize_mode)
             
         sampler = None
-        train_dataset.debug_info(5) # 这个调试信息很有用，可以暂时保留
+        train_dataset.debug_info(3)
         return train_dataset, val_dataset, sampler
     
     if cfg.dataset.name == 'ADNI':
         # 检查配置中是否指定了CSV路径
         csv_path = cfg.dataset.get('csv_path', None)
+        target_size = cfg.dataset.get('target_size', (64, 64, 64))
+        resize_mode = cfg.dataset.get('resize_mode', 'pad')
         
         train_dataset = ADNIDataset(
             root_dir=cfg.dataset.root_dir, 
             csv_path=csv_path,
-            augmentation=cfg.dataset.augmentation)
+            augmentation=cfg.dataset.augmentation,
+            target_size=target_size,
+            resize_mode=resize_mode)
         
         val_dataset = ADNIDataset(
             root_dir=cfg.dataset.root_dir, 
             csv_path=csv_path,
-            augmentation=False)  # 验证集通常不需要数据增强
+            augmentation=False,
+            target_size=target_size,
+            resize_mode=resize_mode)
             
         sampler = None
-        train_dataset.debug_info(5)  ###查看输入的图像的信息 
+        train_dataset.debug_info(3)
         return train_dataset, val_dataset, sampler
     raise ValueError(f'{cfg.dataset.name} Dataset is not available')

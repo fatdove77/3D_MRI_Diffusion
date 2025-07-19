@@ -3,3 +3,8 @@ root_dir: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI
 csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/ADNI.csv  # new input 
 image_channels: 1
 augmentation: True
+
+
+# 新增的配置项
+target_size: [64, 64, 64]
+resize_mode: 'pad'  # 可选: 'pad', 'crop', 'stretch'

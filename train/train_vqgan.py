@@ -99,14 +99,16 @@ def run(cfg: DictConfig):
     with open_dict(cfg):
         cfg.model.resume_from_checkpoint = resume_from_checkpoint
 
-    accelerator = None
+    # 配置分布式训练
+    strategy = None
     if cfg.model.gpus > 1:
-        accelerator = 'ddp'
+        strategy = 'ddp'  # 使用DistributedDataParallel
         
 
     trainer = pl.Trainer(
-        accelerator='gpu',  # 使用'gpu'而不是None
-        devices=cfg.model.gpus,  # 明确指定设备
+        accelerator='gpu',
+        devices=cfg.model.gpus,
+        strategy=strategy,  # 添加strategy参数
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
         resume_from_checkpoint=cfg.model.resume_from_checkpoint, 
@@ -115,6 +117,7 @@ def run(cfg: DictConfig):
         max_epochs=cfg.model.max_epochs,
         precision=cfg.model.precision,
         gradient_clip_val=cfg.model.gradient_clip_val,
+        sync_batchnorm=True,  # 同步BatchNorm，提升多GPU训练稳定性
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)

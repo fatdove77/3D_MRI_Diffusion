@@ -48,28 +48,56 @@ def run(cfg: DictConfig):
     callbacks.append(VideoLogger(
         batch_frequency=1500, max_videos=4, clamp=True))
 
-    # load the most recent checkpoint file
+    # 修复checkpoint加载逻辑
+    resume_from_checkpoint = None
     base_dir = os.path.join(cfg.model.default_root_dir, 'lightning_logs')
+    
     if os.path.exists(base_dir):
-        log_folder = ckpt_file = ''
-        version_id_used = step_used = 0
-        for folder in os.listdir(base_dir):
-            version_id = int(folder.split('_')[1])
-            if version_id > version_id_used:
-                version_id_used = version_id
-                log_folder = folder
-        if len(log_folder) > 0:
-            ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
-            for fn in os.listdir(ckpt_folder):
-                if fn == 'latest_checkpoint.ckpt':
-                    ckpt_file = 'latest_checkpoint_prev.ckpt'
-                    os.rename(os.path.join(ckpt_folder, fn),
-                              os.path.join(ckpt_folder, ckpt_file))
-            if len(ckpt_file) > 0:
-                cfg.model.resume_from_checkpoint = os.path.join(
-                    ckpt_folder, ckpt_file)
-                print('will start from the recent ckpt %s' %
-                      cfg.model.resume_from_checkpoint)
+        try:
+            log_folder = ckpt_file = ''
+            version_id_used = -1
+            
+            # 找到最新的version文件夹
+            for folder in os.listdir(base_dir):
+                if folder.startswith('version_'):
+                    try:
+                        version_id = int(folder.split('_')[1])
+                        if version_id > version_id_used:
+                            version_id_used = version_id
+                            log_folder = folder
+                    except (ValueError, IndexError):
+                        continue
+            
+            if log_folder and version_id_used >= 0:
+                ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
+                
+                # 检查checkpoints文件夹是否存在
+                if os.path.exists(ckpt_folder):
+                    # 查找checkpoint文件
+                    for fn in os.listdir(ckpt_folder):
+                        if fn == 'latest_checkpoint.ckpt':
+                            ckpt_file = 'latest_checkpoint_prev.ckpt'
+                            old_path = os.path.join(ckpt_folder, fn)
+                            new_path = os.path.join(ckpt_folder, ckpt_file)
+                            os.rename(old_path, new_path)
+                            break
+                        elif fn.endswith('.ckpt'):
+                            # 如果没有latest_checkpoint.ckpt，使用最新的ckpt文件
+                            ckpt_file = fn
+                    
+                    if ckpt_file:
+                        resume_from_checkpoint = os.path.join(ckpt_folder, ckpt_file)
+                        print(f'将从最近的checkpoint继续训练: {resume_from_checkpoint}')
+                else:
+                    print(f'Checkpoints文件夹不存在: {ckpt_folder}')
+                    print('将从头开始训练')
+        except Exception as e:
+            print(f'加载checkpoint时出错: {e}')
+            print('将从头开始训练')
+
+    # 更新配置
+    with open_dict(cfg):
+        cfg.model.resume_from_checkpoint = resume_from_checkpoint
 
     accelerator = None
     if cfg.model.gpus > 1:

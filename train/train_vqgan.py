@@ -11,20 +11,11 @@ from train.get_dataset import get_dataset
 import hydra
 from omegaconf import DictConfig, open_dict
 import torch
-
-# 修复PyTorch 2.6的weights_only问题
-import torch.serialization
-torch.serialization.add_safe_globals([DictConfig])
-
 torch.backends.cuda.matmul.allow_tf32 = False
 
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
 def run(cfg: DictConfig):
-    # 添加安全的全局变量
-    import torch.serialization
-    torch.serialization.add_safe_globals([DictConfig])
-    
     pl.seed_everything(cfg.model.seed)
 
     train_dataset, val_dataset, sampler = get_dataset(cfg)
@@ -108,17 +99,14 @@ def run(cfg: DictConfig):
     with open_dict(cfg):
         cfg.model.resume_from_checkpoint = resume_from_checkpoint
 
-    # 配置分布式训练
-    strategy = None
+    accelerator = None
     if cfg.model.gpus > 1:
-        # 更稳定的DDP配置
-        strategy = 'ddp_find_unused_parameters_false'
+        accelerator = 'ddp'
         
 
     trainer = pl.Trainer(
-        accelerator='gpu',
-        devices=cfg.model.gpus,
-        strategy=strategy,
+        accelerator='gpu',  # 使用'gpu'而不是None
+        devices=cfg.model.gpus,  # 明确指定设备
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
         resume_from_checkpoint=cfg.model.resume_from_checkpoint, 
@@ -127,9 +115,6 @@ def run(cfg: DictConfig):
         max_epochs=cfg.model.max_epochs,
         precision=cfg.model.precision,
         gradient_clip_val=cfg.model.gradient_clip_val,
-        sync_batchnorm=True,
-        enable_progress_bar=True,
-        logger=True,
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)

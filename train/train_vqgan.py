@@ -12,7 +12,8 @@ import hydra
 from omegaconf import DictConfig, open_dict
 import torch
 torch.backends.cuda.matmul.allow_tf32 = False
-
+import omegaconf
+torch.serialization.add_safe_globals([omegaconf.dictconfig.DictConfig])
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
 def run(cfg: DictConfig):

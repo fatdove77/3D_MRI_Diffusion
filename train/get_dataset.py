@@ -13,7 +13,7 @@ def get_dataset(cfg):
             raise ValueError("csv_path must be specified in the config for this dataset.")
         
         # 获取目标尺寸配置，默认为(64, 64, 64)
-        target_size = cfg.dataset.get('target_size', (192, 192, 192))
+        target_size = cfg.dataset.get('target_size', (64, 64, 64))
         # 获取缩放模式，默认为'pad'
         resize_mode = cfg.dataset.get('resize_mode', 'pad')
         

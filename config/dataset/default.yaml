@@ -6,5 +6,5 @@ augmentation: True
 
 
 # 新增的配置项
-target_size: [64, 64, 64]
+target_size: [192, 192, 192]
 resize_mode: 'pad'  # 可选: 'pad', 'crop', 'stretch'

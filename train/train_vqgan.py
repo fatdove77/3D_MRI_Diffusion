@@ -11,12 +11,20 @@ from train.get_dataset import get_dataset
 import hydra
 from omegaconf import DictConfig, open_dict
 import torch
+
+# 修复PyTorch 2.6的weights_only问题
+import torch.serialization
+torch.serialization.add_safe_globals([DictConfig])
+
 torch.backends.cuda.matmul.allow_tf32 = False
-import omegaconf
-torch.serialization.add_safe_globals([omegaconf.dictconfig.DictConfig])
+
 
 @hydra.main(config_path='../config', config_name='base_cfg', version_base=None)
 def run(cfg: DictConfig):
+    # 添加安全的全局变量
+    import torch.serialization
+    torch.serialization.add_safe_globals([DictConfig])
+    
     pl.seed_everything(cfg.model.seed)
 
     train_dataset, val_dataset, sampler = get_dataset(cfg)
@@ -49,65 +57,25 @@ def run(cfg: DictConfig):
     callbacks.append(VideoLogger(
         batch_frequency=1500, max_videos=4, clamp=True))
 
-    # 修复checkpoint加载逻辑
+    # 禁用自动checkpoint恢复 - 每次从头开始训练
     resume_from_checkpoint = None
-    base_dir = os.path.join(cfg.model.default_root_dir, 'lightning_logs')
-    
-    if os.path.exists(base_dir):
-        try:
-            log_folder = ckpt_file = ''
-            version_id_used = -1
-            
-            # 找到最新的version文件夹
-            for folder in os.listdir(base_dir):
-                if folder.startswith('version_'):
-                    try:
-                        version_id = int(folder.split('_')[1])
-                        if version_id > version_id_used:
-                            version_id_used = version_id
-                            log_folder = folder
-                    except (ValueError, IndexError):
-                        continue
-            
-            if log_folder and version_id_used >= 0:
-                ckpt_folder = os.path.join(base_dir, log_folder, 'checkpoints')
-                
-                # 检查checkpoints文件夹是否存在
-                if os.path.exists(ckpt_folder):
-                    # 查找checkpoint文件
-                    for fn in os.listdir(ckpt_folder):
-                        if fn == 'latest_checkpoint.ckpt':
-                            ckpt_file = 'latest_checkpoint_prev.ckpt'
-                            old_path = os.path.join(ckpt_folder, fn)
-                            new_path = os.path.join(ckpt_folder, ckpt_file)
-                            os.rename(old_path, new_path)
-                            break
-                        elif fn.endswith('.ckpt'):
-                            # 如果没有latest_checkpoint.ckpt，使用最新的ckpt文件
-                            ckpt_file = fn
-                    
-                    if ckpt_file:
-                        resume_from_checkpoint = os.path.join(ckpt_folder, ckpt_file)
-                        print(f'将从最近的checkpoint继续训练: {resume_from_checkpoint}')
-                else:
-                    print(f'Checkpoints文件夹不存在: {ckpt_folder}')
-                    print('将从头开始训练')
-        except Exception as e:
-            print(f'加载checkpoint时出错: {e}')
-            print('将从头开始训练')
+    print('每次训练都从头开始，不自动恢复checkpoint')
 
     # 更新配置
     with open_dict(cfg):
         cfg.model.resume_from_checkpoint = resume_from_checkpoint
 
-    accelerator = None
+    # 配置分布式训练
+    strategy = None
     if cfg.model.gpus > 1:
-        accelerator = 'ddp'
+        # 更稳定的DDP配置
+        strategy = 'ddp_find_unused_parameters_false'
         
 
     trainer = pl.Trainer(
-        accelerator='gpu',  # 使用'gpu'而不是None
-        devices=cfg.model.gpus,  # 明确指定设备
+        accelerator='gpu',
+        devices=cfg.model.gpus,
+        strategy=strategy,
         accumulate_grad_batches=cfg.model.accumulate_grad_batches,
         default_root_dir=cfg.model.default_root_dir,
         resume_from_checkpoint=cfg.model.resume_from_checkpoint, 
@@ -116,6 +84,9 @@ def run(cfg: DictConfig):
         max_epochs=cfg.model.max_epochs,
         precision=cfg.model.precision,
         gradient_clip_val=cfg.model.gradient_clip_val,
+        sync_batchnorm=True,
+        enable_progress_bar=True,
+        logger=True,
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)

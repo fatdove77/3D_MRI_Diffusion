@@ -128,7 +128,7 @@ def run(cfg: DictConfig):
 
     # DDP包装模型
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
         print_rank0("模型已用DDP包装")
 
     # 创建扩散模型

@@ -692,7 +692,9 @@ class Unet3D(nn.Module):
             if context is not None:
                 b, c, f, h, w = x.shape
                 x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
-                x_flat = x_flat + self.cross_attn(x_flat, context.unsqueeze(1))
+                # 确保context的维度正确扩展
+                context_expanded = context.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [b, seq_len, 512]
+                x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
                 x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=h, w=w)
             h.append(x)
             x = downsample(x)

@@ -47,3 +47,6 @@ git+https://github.com/openai/CLIP.git
 
 
 rotary-embedding-torch
+
+wandb
+monai

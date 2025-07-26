@@ -1,12 +1,12 @@
-vqgan_ckpt: ??? 
+vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/hcp_test/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt 
 
 # Have to be derived from VQ-GAN Latent space dimensions
 diffusion_img_size: null
 diffusion_depth_size: null
 diffusion_num_channels: null
 dim_mults: ???
-csv_path: /home/jing/MRI_Diffusion/medicaldiffusion/data/data.csv
-results_folder: /home/jing/MRI_Diffusion/medicaldiffusion/checkpoints/ddpm/
+csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/data.csv
+results_folder: /home/jz97/mri_diffusion/3D_MRI_Diffusion/checkpoints/ddpm/
 results_folder_postfix: ''
 load_milestone: False
 

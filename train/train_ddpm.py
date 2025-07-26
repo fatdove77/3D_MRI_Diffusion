@@ -291,7 +291,7 @@ class DistributedTrainer:
             if self.world_size > 1:
                 loss_tensor = torch.tensor(total_loss, device=torch.cuda.current_device())
                 dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-                total_loss = loss_tensor.item() / world_size  # 手动除以world_size
+                total_loss = loss_tensor.item() / self.world_size  # 手动除以world_size
             
             # 更新进度条（仅主进程）
             if self.rank == 0:

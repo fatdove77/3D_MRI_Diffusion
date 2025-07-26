@@ -1,30 +1,39 @@
 vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/hcp_test/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt 
 
-# Have to be derived from VQ-GAN Latent space dimensions
+  vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/hcp_test/lightning_logs/version_1/checkpoints/latest_checkpoint.ckpt 
+
+# 这些参数会根据VQ-GAN编码后的实际尺寸动态设置
 diffusion_img_size: null
-diffusion_depth_size: null
+diffusion_depth_size: null  
 diffusion_num_channels: null
-dim_mults: ???
-csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/data.csv
-results_folder: /home/jz97/mri_diffusion/3D_MRI_Diffusion/checkpoints/ddpm/
-results_folder_postfix: ''
-load_milestone: False
+dim_mults: [1, 2, 4, 8]
 
+# 数据路径
+csv_path: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/data/ADNI/ADNI.csv
+results_folder: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/checkpoints/ddpm/
+results_folder_postfix: 'multi_gpu'
 
-batch_size: 40
-num_workers: 20
-logger: wandb
-objective: pred_x0
-save_and_sample_every: 1000
+# 多GPU训练配置
+batch_size: 8              # 每个GPU的batch size
+num_workers: 8             # 每个GPU的worker数
+gpus: 2                    # 使用的GPU数量
+
+# 模型配置
 denoising_fn: Unet3D
 train_lr: 1e-4
-timesteps: 300 # number of steps
-sampling_timesteps: 250 # number of sampling timesteps (using ddim for faster inference [see citation for ddim paper])
-loss_type: l1 # L1 or L2
-train_num_steps: 700000 # total training steps
-gradient_accumulate_every: 2 # gradient accumulation steps
-ema_decay: 0.995 # exponential moving average decay
-amp: False # turn on mixed precision
-num_sample_rows: 1
-gpus: 0
+timesteps: 1000
+sampling_timesteps: 250
+loss_type: l1
+objective: pred_x0
 
+# 训练配置  
+train_num_steps: 100000
+gradient_accumulate_every: 2
+save_and_sample_every: 2000
+ema_decay: 0.995
+amp: True                  # 开启混合精度训练
+num_sample_rows: 2
+
+# 其他配置
+load_milestone: False
+logger: wandb

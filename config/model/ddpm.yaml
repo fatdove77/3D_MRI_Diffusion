@@ -1,4 +1,4 @@
-vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/lightning_logs/version_0/checkpoints/latest_checkpoint.ckpt 
+vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/lightning_logs/version_0/checkpoints/latest_checkpoint-v2.ckpt 
 
 
 # 这些参数会根据VQ-GAN编码后的实际尺寸动态设置

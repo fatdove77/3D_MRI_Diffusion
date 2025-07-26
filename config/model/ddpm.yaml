@@ -15,7 +15,7 @@ results_folder_postfix: 'multi_gpu'
 # 多GPU训练配置
 batch_size: 8              # 每个GPU的batch size
 num_workers: 8             # 每个GPU的worker数
-gpus: 2                    # 使用的GPU数量
+gpus: 4                    # 使用的GPU数量
 
 # 模型配置
 denoising_fn: Unet3D

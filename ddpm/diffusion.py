@@ -497,7 +497,7 @@ class Unet3D(nn.Module):
         super().__init__()
         self.channels = channels
         # 在 Unet3D 初始化中添加
-        self.cross_attn = CrossAttention(dim, context_dim=cond_dim if cond_dim is not None else dim)
+        self.cross_attn = CrossAttention(dim, context_dim=512)  # 直接指定CLIP的维度
         # 文本条件处理
         if cond_dim is not None:
             self.has_cond = True
@@ -678,7 +678,7 @@ class Unet3D(nn.Module):
         if self.has_cond and cond is not None:
             # 处理 [b, 512] 形状的 CLIP 文本特征
             # 确保条件向量维度与模型匹配
-            context = self.cond_proj(cond)  # [b, dim]
+            context = cond  # [b, dim]
         else:
             context = None
 

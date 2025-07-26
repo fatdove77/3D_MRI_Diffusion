@@ -672,13 +672,10 @@ class Unet3D(nn.Module):
             t = torch.cat((t, cond), dim=-1)
 
         h = []
-        
-        
-         #处理文本条件
+
+        #处理文本条件
         if self.has_cond and cond is not None:
-            # 处理 [b, 512] 形状的 CLIP 文本特征
-            # 确保条件向量维度与模型匹配
-            context = cond  # [b, dim]
+            context = cond  # [b, 512]
         else:
             context = None
 
@@ -687,21 +684,21 @@ class Unet3D(nn.Module):
             x = block2(x, t)
             x = spatial_attn(x)
             x = temporal_attn(x, pos_bias=time_rel_pos_bias,
-                              focus_present_mask=focus_present_mask)
-            # 添加的条件处理
+                            focus_present_mask=focus_present_mask)
             # 添加的条件处理
             if context is not None:
-                b, c, f, h, w = x.shape
+                b, c, f, height, width = x.shape  # ← 改成 height, width
                 x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
                 
                 # 正确扩展context以匹配x_flat的batch维度
-                context_repeated = context.unsqueeze(1).repeat(1, f, 1)  # [4, 48, 512]
-                context_flat = rearrange(context_repeated, 'b f d -> (b f) d')  # [192, 512]
-                context_expanded = context_flat.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [192, 2304, 512]
+                context_repeated = context.unsqueeze(1).repeat(1, f, 1)  # [b, f, 512]
+                context_flat = rearrange(context_repeated, 'b f d -> (b f) d')  # [b*f, 512]
+                context_expanded = context_flat.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [b*f, h*w, 512]
                 
                 x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
-                x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=h, w=w)
-            h.append(x)
+                x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=height, w=width)
+                
+            h.append(x)  # ← 现在 h 还是列表
             x = downsample(x)
 
         x = self.mid_block1(x, t)

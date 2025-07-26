@@ -686,17 +686,17 @@ class Unet3D(nn.Module):
             x = temporal_attn(x, pos_bias=time_rel_pos_bias,
                             focus_present_mask=focus_present_mask)
             # 添加的条件处理
-            if context is not None:
-                b, c, f, height, width = x.shape  # ← 改成 height, width
-                x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
+            # if context is not None:
+                # b, c, f, height, width = x.shape  # ← 改成 height, width
+                # x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
                 
-                # 正确扩展context以匹配x_flat的batch维度
-                context_repeated = context.unsqueeze(1).repeat(1, f, 1)  # [b, f, 512]
-                context_flat = rearrange(context_repeated, 'b f d -> (b f) d')  # [b*f, 512]
-                context_expanded = context_flat.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [b*f, h*w, 512]
+                # # 正确扩展context以匹配x_flat的batch维度
+                # context_repeated = context.unsqueeze(1).repeat(1, f, 1)  # [b, f, 512]
+                # context_flat = rearrange(context_repeated, 'b f d -> (b f) d')  # [b*f, 512]
+                # context_expanded = context_flat.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [b*f, h*w, 512]
                 
-                x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
-                x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=height, w=width)
+                # x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
+                # x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=height, w=width)
                 
             h.append(x)  # ← 现在 h 还是列表
             x = downsample(x)

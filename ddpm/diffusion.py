@@ -156,25 +156,22 @@ class Residual(nn.Module):
 
 
 class SinusoidalPosEmb(nn.Module):
-    def __init__(self, dim, output_dim=None):
+    def __init__(self, dim, max_period=10000):
         super().__init__()
         self.dim = dim
-        self.output_dim = output_dim or dim
+        self.max_period = max_period
         
     def forward(self, x):
         device = x.device
         half_dim = self.dim // 2
-        emb = math.log(10000) / (half_dim - 1)
+        emb = math.log(self.max_period) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         
-        # 添加额外的填充以匹配期望的输入维度
-        if emb.shape[-1] < self.output_dim:
-            padding = torch.zeros(emb.shape[0], self.output_dim - emb.shape[-1], device=device)
-            emb = torch.cat([emb, padding], dim=-1)
-        elif emb.shape[-1] > self.output_dim:
-            emb = emb[:, :self.output_dim]
+        # 如果维度是奇数，需要填充
+        if self.dim % 2 == 1:
+            emb = F.pad(emb, (0, 1), mode='constant', value=0)
             
         return emb
 
@@ -409,74 +406,248 @@ class Attention(nn.Module):
 
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, context_dim=512, heads=8, dim_head=64):
+    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
         super().__init__()
-        self.heads = heads
-        self.scale = dim_head ** -0.5
         inner_dim = dim_head * heads
-        
-        # 对图像特征的查询投影
-        self.to_q = nn.Linear(dim, inner_dim, bias=False)
-        # 对文本特征的键和值投影
+        context_dim = default(context_dim, query_dim)
+
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
-        
-        self.to_out = nn.Linear(inner_dim, dim)
-        
-    def forward(self, x, context):
-        # x: 图像特征 [b, n, d]
-        # context: 文本特征 [b, m, d_context]
-        
-        # 多头拆分
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, query_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x, context=None, mask=None):
+        h = self.heads
+
         q = self.to_q(x)
+        context = default(context, x)
         k = self.to_k(context)
         v = self.to_v(context)
-        
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), (q, k, v))
-        
-        # 注意力计算
-        sim = einsum('b h i d, b h j d -> b h i j', q, k) * self.scale
+
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+
+        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+
+        if exists(mask):
+            mask = rearrange(mask, 'b ... -> b (...)')
+            max_neg_value = -torch.finfo(sim.dtype).max
+            mask = repeat(mask, 'b j -> (b h) () j', h=h)
+            sim.masked_fill_(~mask, max_neg_value)
+
+        # attention, what we cannot get enough of
         attn = sim.softmax(dim=-1)
-        
-        # 聚合结果
-        out = einsum('b h i j, b h j d -> b h i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        
+
+        out = einsum('b i j, b j d -> b i d', attn, v)
+        out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
         return self.to_out(out)
 
 
-
-class ConditionedBlock(nn.Module):
-    def __init__(self, dim, dim_out, context_dim=512, groups=8):
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, dim, context_dim=512, heads=8, dim_head=64):
         super().__init__()
-        self.block = Block(dim, dim_out, groups=groups)
+        self.dim = dim
+        self.context_dim = context_dim
         
-        # 添加交叉注意力
-        self.cross_attn = CrossAttention(dim_out, context_dim=context_dim)
-        self.norm = LayerNorm(dim_out)
+        # 文本特征投影到图像特征空间
+        self.context_proj = nn.Sequential(
+            nn.Linear(context_dim, dim),
+            nn.LayerNorm(dim)
+        ) if context_dim != dim else nn.Identity()
+        
+        # 交叉注意力
+        self.cross_attn = CrossAttention(
+            query_dim=dim,
+            context_dim=dim,  # 投影后都是dim维度
+            heads=heads,
+            dim_head=dim_head
+        )
+        
+        # 层归一化
+        self.norm = LayerNorm(dim)
         
     def forward(self, x, context=None):
-        x = self.block(x)
+        """
+        x: 图像特征 [b, c, d, h, w] 
+        context: 文本特征 [b, seq_len, context_dim] 或 [b, context_dim]
+        """
+        if context is None:
+            return x
+            
+        # 保存原始形状
+        b, c, d, h, w = x.shape
         
-        if context is not None:
-            # 形状转换用于注意力
-            b, c, f, h, w = x.shape
-            x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
-            
-            # 适应文本特征的形状
-            # 假设 context 是 [b, context_dim]
-            context_expanded = context.unsqueeze(1)  # [b, 1, context_dim]
-            
-            # 应用交叉注意力
-            x_flat = self.norm(x_flat)
-            x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
-            
-            # 恢复原始形状
-            x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=h, w=w)
+        # 1. 将3D图像特征展平为序列
+        x_flat = rearrange(x, 'b c d h w -> b (d h w) c')
         
-        return x
+        # 2. 处理文本特征维度
+        if len(context.shape) == 2:  # [b, context_dim]
+            context = context.unsqueeze(1)  # [b, 1, context_dim]
+        
+        # 3. 投影文本特征到图像特征维度
+        context_proj = self.context_proj(context)  # [b, seq_len, dim]
+        
+        # 4. 应用层归一化
+        x_norm = self.norm(x_flat)
+        
+        # 5. 交叉注意力
+        attn_out = self.cross_attn(x_norm, context_proj)  # [b, d*h*w, dim]
+        
+        # 6. 残差连接
+        x_out = x_flat + attn_out
+        
+        # 7. 恢复3D形状
+        x_out = rearrange(x_out, 'b (d h w) c -> b c d h w', d=d, h=h, w=w)
+        
+        return x_out
+
+class AdaptiveCrossAttentionBlock(nn.Module):
+    """
+    自适应交叉注意力块 - 能自动处理不同的3D图像尺寸
+    """
+    def __init__(self, dim, context_dim=512, heads=8, dim_head=None, chunk_size=None):
+        super().__init__()
+        self.dim = dim
+        self.context_dim = context_dim
+        self.chunk_size = chunk_size  # 用于大尺寸图像的分块处理
+        
+        # 自动计算合适的头维度
+        if dim_head is None:
+            dim_head = max(32, dim // heads)
+            
+        # 确保heads能整除dim
+        while dim % heads != 0 and heads > 1:
+            heads -= 1
+            
+        self.heads = heads
+        self.dim_head = dim_head
+        
+        # 上下文投影 - 支持任意输入维度
+        self.context_proj = nn.Sequential(
+            nn.Linear(context_dim, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim)
+        )
+        
+        # 位置编码 - 可学习的3D位置编码
+        self.pos_encoding = nn.Parameter(torch.randn(1, 1, dim) * 0.02)
+        
+        # 交叉注意力
+        self.cross_attn = CrossAttention(
+            query_dim=dim,
+            context_dim=dim,
+            heads=heads,
+            dim_head=dim_head
+        )
+        
+        # 前馈网络
+        self.ff = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(dim * 4, dim),
+            nn.Dropout(0.1)
+        )
+        
+        # 层归一化
+        self.norm1 = LayerNorm(dim)
+        self.norm2 = LayerNorm(dim)
+        
+    def _chunk_forward(self, x_flat, context_proj):
+        """分块处理大尺寸图像"""
+        if self.chunk_size is None or x_flat.shape[1] <= self.chunk_size:
+            return self.cross_attn(x_flat, context_proj)
+        
+        # 分块处理
+        chunks = []
+        for i in range(0, x_flat.shape[1], self.chunk_size):
+            chunk = x_flat[:, i:i+self.chunk_size]
+            chunk_out = self.cross_attn(chunk, context_proj)
+            chunks.append(chunk_out)
+        
+        return torch.cat(chunks, dim=1)
+        
+    def forward(self, x, context=None):
+        """
+        x: [b, c, d, h, w] - 3D图像特征，尺寸可变
+        context: [b, seq_len, context_dim] 或 [b, context_dim] - 文本特征
+        """
+        if context is None:
+            return x
+            
+        # 保存原始形状并展平
+        orig_shape = x.shape
+        b, c, d, h, w = orig_shape
+        x_flat = rearrange(x, 'b c d h w -> b (d h w) c')
+        
+        # 处理上下文
+        if len(context.shape) == 2:
+            context = context.unsqueeze(1)  # [b, 1, context_dim]
+            
+        # 投影上下文到图像特征空间
+        context_proj = self.context_proj(context)  # [b, seq_len, dim]
+        
+        # 添加位置编码
+        seq_len = x_flat.shape[1]
+        if seq_len > 1:
+            pos_enc = self.pos_encoding.expand(b, seq_len, -1)
+            x_flat = x_flat + pos_enc
+        
+        # 第一个残差块：交叉注意力
+        x_norm1 = self.norm1(x_flat)
+        attn_out = self._chunk_forward(x_norm1, context_proj)
+        x_flat = x_flat + attn_out
+        
+        # 第二个残差块：前馈网络
+        x_norm2 = self.norm2(x_flat)
+        ff_out = self.ff(x_norm2)
+        x_flat = x_flat + ff_out
+        
+        # 恢复原始3D形状
+        x_out = rearrange(x_flat, 'b (d h w) c -> b c d h w', d=d, h=h, w=w)
+        
+        return x_out
 
 
+# 用于检测和适配维度的工具函数
+def get_adaptive_cross_attention(dim, context_dim, image_size_3d=None):
+    """
+    根据图像尺寸自动选择合适的交叉注意力配置
+    """
+    if image_size_3d is None:
+        # 默认配置
+        return AdaptiveCrossAttentionBlock(dim, context_dim)
+    
+    d, h, w = image_size_3d
+    total_spatial = d * h * w
+    
+    # 根据空间尺寸选择配置
+    if total_spatial > 64 * 64 * 64:  # 大尺寸
+        chunk_size = 4096  # 分块处理
+        heads = min(8, dim // 64)
+    elif total_spatial > 32 * 32 * 32:  # 中等尺寸
+        chunk_size = 8192
+        heads = min(16, dim // 32)
+    else:  # 小尺寸
+        chunk_size = None
+        heads = min(32, dim // 16)
+    
+    return AdaptiveCrossAttentionBlock(
+        dim=dim,
+        context_dim=context_dim,
+        heads=heads,
+        chunk_size=chunk_size
+    )
+
+# 修改 Unet3D 中的时间嵌入部分
 class Unet3D(nn.Module):
     def __init__(
         self,
@@ -496,33 +667,29 @@ class Unet3D(nn.Module):
     ):
         super().__init__()
         self.channels = channels
-        # 在 Unet3D 初始化中添加
-        self.cross_attn = CrossAttention(dim, context_dim=512)  # 直接指定CLIP的维度
+        self.has_cond = cond_dim is not None
+        
         # 文本条件处理
-        if cond_dim is not None:
-            self.has_cond = True
+        if self.has_cond:
             self.cond_proj = nn.Sequential(
                 nn.Linear(cond_dim, dim * 4),
                 nn.SiLU(),
-                nn.Linear(dim * 4, dim)
+                nn.Linear(dim * 4, dim * 4)
             )
             self.null_cond_emb = nn.Parameter(torch.randn(1, cond_dim))
-        else:
-            self.has_cond = False
-
+        
         # temporal attention and its relative positional encoding
-
         rotary_emb = RotaryEmbedding(min(32, attn_dim_head))
 
-        def temporal_attn(dim): return EinopsToAndFrom('b c f h w', 'b (h w) f c', Attention(
-            dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb))
+        def temporal_attn(dim): 
+            return EinopsToAndFrom('b c f h w', 'b (h w) f c', Attention(
+                dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb))
 
         # realistically will not be able to generate that many frames of video... yet
         self.time_rel_pos_bias = RelativePositionBias(
             heads=attn_heads, max_distance=32)
 
         # initial conv
-
         init_dim = default(init_dim, dim)
         assert is_odd(init_kernel_size)
 
@@ -534,58 +701,54 @@ class Unet3D(nn.Module):
             PreNorm(init_dim, temporal_attn(init_dim)))
 
         # dimensions
-
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
 
-        # time conditioning
-
+        # 修复时间嵌入维度匹配
         time_dim = dim * 4
-        expected_dim = 109  # 根据线性层权重的输入维度
-
+        
+        # 使用固定的时间嵌入维度
+        time_emb_dim = dim  # 基础时间嵌入维度
+        
         self.time_mlp = nn.Sequential(
-            SinusoidalPosEmb(dim, output_dim=expected_dim),  # 确保输出109维
-            nn.Linear(expected_dim, time_dim),
+            SinusoidalPosEmb(time_emb_dim),  # 输出 time_emb_dim 维度
+            nn.Linear(time_emb_dim, time_dim),
             nn.GELU(),
             nn.Linear(time_dim, time_dim)
         )
 
-        # text conditioning
-
-        self.has_cond = exists(cond_dim) or use_bert_text_cond
-        cond_dim = BERT_MODEL_DIM if use_bert_text_cond else cond_dim
-
-        self.null_cond_emb = nn.Parameter(
-            torch.randn(1, cond_dim)) if self.has_cond else None
-
-        cond_dim = time_dim + int(cond_dim or 0)
+        # 条件维度计算
+        if self.has_cond:
+            cond_dim_final = time_dim + time_dim  # time_dim + processed_cond_dim
+        else:
+            cond_dim_final = time_dim
 
         # layers
-
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
 
         num_resolutions = len(in_out)
 
         # block type
-
         block_klass = partial(ResnetBlock, groups=resnet_groups)
-        block_klass_cond = partial(block_klass, time_emb_dim=cond_dim)
+        block_klass_cond = partial(block_klass, time_emb_dim=cond_dim_final)
 
         # modules for all layers
-
+        # modules for all layers - ENCODER
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
 
             self.downs.append(nn.ModuleList([
-                block_klass_cond(dim_in, dim_out),
-                block_klass_cond(dim_out, dim_out),
+                block_klass_cond(dim_in, dim_out),  # block1
+                block_klass_cond(dim_out, dim_out), # block2
                 Residual(PreNorm(dim_out, SpatialLinearAttention(
-                    dim_out, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(),
-                Residual(PreNorm(dim_out, temporal_attn(dim_out))),
-                Downsample(dim_out) if not is_last else nn.Identity()
+                    dim_out, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(), # spatial_attn
+                Residual(PreNorm(dim_out, temporal_attn(dim_out))), # temporal_attn
+                get_adaptive_cross_attention(dim_out, cond_dim) if self.has_cond else nn.Identity(), # cross_attn
+                Downsample(dim_out) if not is_last else nn.Identity() # downsample
             ]))
 
+        # 中间层交叉注意力
         mid_dim = dims[-1]
         self.mid_block1 = block_klass_cond(mid_dim, mid_dim)
 
@@ -593,21 +756,25 @@ class Unet3D(nn.Module):
             'b c f h w', 'b f (h w) c', Attention(mid_dim, heads=attn_heads))
 
         self.mid_spatial_attn = Residual(PreNorm(mid_dim, spatial_attn))
-        self.mid_temporal_attn = Residual(
-            PreNorm(mid_dim, temporal_attn(mid_dim)))
+        self.mid_temporal_attn = Residual(PreNorm(mid_dim, temporal_attn(mid_dim)))
+
+        # 添加中间层的交叉注意力
+        self.mid_cross_attn = get_adaptive_cross_attention(mid_dim, cond_dim) if self.has_cond else nn.Identity()
 
         self.mid_block2 = block_klass_cond(mid_dim, mid_dim)
 
+        # modules for all layers - DECODER  
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind >= (num_resolutions - 1)
 
             self.ups.append(nn.ModuleList([
-                block_klass_cond(dim_out * 2, dim_in),
-                block_klass_cond(dim_in, dim_in),
+                block_klass_cond(dim_out * 2, dim_in), # block1 (注意这里输入维度*2，因为有skip connection)
+                block_klass_cond(dim_in, dim_in),      # block2
                 Residual(PreNorm(dim_in, SpatialLinearAttention(
-                    dim_in, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(),
-                Residual(PreNorm(dim_in, temporal_attn(dim_in))),
-                Upsample(dim_in) if not is_last else nn.Identity()
+                    dim_in, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(), # spatial_attn
+                Residual(PreNorm(dim_in, temporal_attn(dim_in))), # temporal_attn
+                get_adaptive_cross_attention(dim_in, cond_dim) if self.has_cond else nn.Identity(), # cross_attn
+                Upsample(dim_in) if not is_last else nn.Identity() # upsample
             ]))
 
         out_dim = default(out_dim, channels)
@@ -615,6 +782,132 @@ class Unet3D(nn.Module):
             block_klass(dim * 2, dim),
             nn.Conv3d(dim, out_dim, 1)
         )
+# gaussian diffusion trainer class
+    def forward(
+    self,
+    x,
+    time,
+    cond=None,
+    null_cond_prob=0.,
+    focus_present_mask=None,
+    prob_focus_present=0.
+):
+    # """
+    # x: [b, c, d, h, w] - 3D图像特征
+    # time: [b] - 时间步
+    # cond: [b, context_dim] 或 [b, seq_len, context_dim] - 文本条件
+    # """
+        assert not (self.has_cond and not exists(cond)), 'cond must be passed in if cond_dim specified'
+        
+        batch, device = x.shape[0], x.device
+        
+        # 焦点掩码处理
+        focus_present_mask = default(focus_present_mask, lambda: prob_mask_like(
+            (batch,), prob_focus_present, device=device))
+
+        time_rel_pos_bias = self.time_rel_pos_bias(x.shape[2], device=x.device)
+
+        # 初始卷积
+        x = self.init_conv(x)
+        r = x.clone()
+
+        x = self.init_temporal_attn(x, pos_bias=time_rel_pos_bias)
+
+        # 时间嵌入处理
+        t = self.time_mlp(time) if exists(self.time_mlp) else None
+        
+        # 文本条件处理
+        cond_emb = None
+        if self.has_cond and exists(cond):
+            # 处理classifier free guidance
+            if null_cond_prob > 0:
+                # 创建null条件掩码
+                null_mask = prob_mask_like((batch,), null_cond_prob, device=device)
+                # 扩展null_cond_emb以匹配cond的形状
+                if len(cond.shape) == 2:  # [b, context_dim]
+                    null_cond = self.null_cond_emb.expand(batch, -1)
+                else:  # [b, seq_len, context_dim]
+                    null_cond = self.null_cond_emb.expand(batch, cond.shape[1], -1)
+                
+                # 根据掩码选择条件
+                cond = torch.where(
+                    null_mask.unsqueeze(-1) if len(cond.shape) == 2 else null_mask.unsqueeze(-1).unsqueeze(-1),
+                    null_cond,
+                    cond
+                )
+            
+            # 投影文本条件
+            if len(cond.shape) == 2:  # [b, context_dim]
+                cond_emb = self.cond_proj(cond)  # [b, time_dim]
+                # 与时间嵌入拼接
+                t = torch.cat((t, cond_emb), dim=-1) if exists(t) else cond_emb
+            else:  # [b, seq_len, context_dim] - 保持原始形状用于交叉注意力
+                # 对于交叉注意力，我们保持cond的原始形状
+                # 但仍需要创建一个全局条件嵌入与时间嵌入拼接
+                cond_global = cond.mean(dim=1)  # [b, context_dim] - 平均池化作为全局特征
+                cond_emb_global = self.cond_proj(cond_global)  # [b, time_dim]
+                t = torch.cat((t, cond_emb_global), dim=-1) if exists(t) else cond_emb_global
+        else:
+            # 如果没有条件，cond设为None
+            cond = None
+
+        # Encoder阶段
+        h = []
+        
+        for idx, (block1, block2, spatial_attn, temporal_attn, cross_attn, downsample) in enumerate(self.downs):
+            # ResNet blocks with time/condition embedding
+            x = block1(x, t)
+            x = block2(x, t)
+            
+            # Spatial attention
+            x = spatial_attn(x)
+            
+            # Temporal attention with positional bias
+            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
+                            focus_present_mask=focus_present_mask)
+            
+            # Cross attention with text condition
+            x = cross_attn(x, context=cond)
+            
+            h.append(x)
+            x = downsample(x)
+
+        # Middle blocks
+        x = self.mid_block1(x, t)
+        x = self.mid_spatial_attn(x)
+        x = self.mid_temporal_attn(x, pos_bias=time_rel_pos_bias, 
+                                focus_present_mask=focus_present_mask)
+        
+        # Middle cross attention
+        x = self.mid_cross_attn(x, context=cond)
+        
+        x = self.mid_block2(x, t)
+
+        # Decoder阶段
+        for idx, (block1, block2, spatial_attn, temporal_attn, cross_attn, upsample) in enumerate(self.ups):
+            # Skip connection
+            x = torch.cat((x, h.pop()), dim=1)
+            
+            # ResNet blocks with time/condition embedding
+            x = block1(x, t)
+            x = block2(x, t)
+            
+            # Spatial attention
+            x = spatial_attn(x)
+            
+            # Temporal attention with positional bias
+            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
+                            focus_present_mask=focus_present_mask)
+            
+            # Cross attention with text condition
+            x = cross_attn(x, context=cond)
+            
+            x = upsample(x)
+
+        # Final output
+        x = torch.cat((x, r), dim=1)
+        return self.final_conv(x)
+
 
     def forward_with_cond_scale(
         self,
@@ -622,105 +915,20 @@ class Unet3D(nn.Module):
         cond_scale=2.,
         **kwargs
     ):
-        logits = self.forward(*args, null_cond_prob=0., **kwargs)
+        """
+        支持classifier free guidance的前向传播
+        """
         if cond_scale == 1 or not self.has_cond:
-            return logits
+            return self.forward(*args, null_cond_prob=0., **kwargs)
 
+        # 有条件的预测
+        logits = self.forward(*args, null_cond_prob=0., **kwargs)
+        
+        # 无条件的预测
         null_logits = self.forward(*args, null_cond_prob=1., **kwargs)
+        
+        # 应用guidance scale
         return null_logits + (logits - null_logits) * cond_scale
-
-    def forward(
-        self,
-        x,
-        time,
-        cond=None,
-        null_cond_prob=0.,
-        focus_present_mask=None,
-        # probability at which a given batch sample will focus on the present (0. is all off, 1. is completely arrested attention across time)
-        prob_focus_present=0.
-    ):
-        assert not (self.has_cond and not exists(cond)
-                    ), 'cond must be passed in if cond_dim specified'
-        batch, device = x.shape[0], x.device
-
-        focus_present_mask = default(focus_present_mask, lambda: prob_mask_like(
-            (batch,), prob_focus_present, device=device))
-
-        time_rel_pos_bias = self.time_rel_pos_bias(x.shape[2], device=x.device)
-
-        x = self.init_conv(x)
-        r = x.clone()
-
-        x = self.init_temporal_attn(x, pos_bias=time_rel_pos_bias)
-
-
-        print(f"时间张量形状: {time.shape}")
-        # 检查 SinusoidalPosEmb 的输出
-        if exists(self.time_mlp):
-            time_emb = self.time_mlp[0](time)  # SinusoidalPosEmb 的输出
-            print(f"时间嵌入形状: {time_emb.shape}")
-            # 尝试打印第一个线性层的权重尺寸
-            print(f"第一个线性层权重形状: {self.time_mlp[1].weight.shape}")
-        t = self.time_mlp(time) if exists(self.time_mlp) else None
-
-        # classifier free guidance
-        if self.has_cond:
-            batch, device = x.shape[0], x.device
-            mask = prob_mask_like((batch,), null_cond_prob, device=device)
-            cond = torch.where(rearrange(mask, 'b -> b 1'),
-                               self.null_cond_emb, cond)
-            t = torch.cat((t, cond), dim=-1)
-
-        h = []
-
-        #处理文本条件
-        if self.has_cond and cond is not None:
-            context = cond  # [b, 512]
-        else:
-            context = None
-
-        for block1, block2, spatial_attn, temporal_attn, downsample in self.downs:
-            x = block1(x, t)
-            x = block2(x, t)
-            x = spatial_attn(x)
-            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
-                            focus_present_mask=focus_present_mask)
-            # 添加的条件处理
-            # if context is not None:
-                # b, c, f, height, width = x.shape  # ← 改成 height, width
-                # x_flat = rearrange(x, 'b c f h w -> (b f) (h w) c')
-                
-                # # 正确扩展context以匹配x_flat的batch维度
-                # context_repeated = context.unsqueeze(1).repeat(1, f, 1)  # [b, f, 512]
-                # context_flat = rearrange(context_repeated, 'b f d -> (b f) d')  # [b*f, 512]
-                # context_expanded = context_flat.unsqueeze(1).expand(-1, x_flat.shape[1], -1)  # [b*f, h*w, 512]
-                
-                # x_flat = x_flat + self.cross_attn(x_flat, context_expanded)
-                # x = rearrange(x_flat, '(b f) (h w) c -> b c f h w', b=b, f=f, h=height, w=width)
-                
-            h.append(x)  # ← 现在 h 还是列表
-            x = downsample(x)
-
-        x = self.mid_block1(x, t)
-        x = self.mid_spatial_attn(x)
-        x = self.mid_temporal_attn(
-            x, pos_bias=time_rel_pos_bias, focus_present_mask=focus_present_mask)
-        x = self.mid_block2(x, t)
-
-        for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
-            x = torch.cat((x, h.pop()), dim=1)
-            x = block1(x, t)
-            x = block2(x, t)
-            x = spatial_attn(x)
-            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
-                              focus_present_mask=focus_present_mask)
-            x = upsample(x)
-
-        x = torch.cat((x, r), dim=1)
-        return self.final_conv(x)
-
-# gaussian diffusion trainer class
-
 
 def extract(a, t, x_shape):
     b, *_ = t.shape
@@ -753,7 +961,7 @@ class GaussianDiffusion(nn.Module):
         channels=3,
         timesteps=1000,
         loss_type='l1',
-        use_dynamic_thres=False,  # from the Imagen paper
+        use_dynamic_thres=False,
         dynamic_thres_percentile=0.9,
         vqgan_ckpt=None,
     ):
@@ -763,9 +971,15 @@ class GaussianDiffusion(nn.Module):
         self.num_frames = num_frames
         self.denoise_fn = denoise_fn
 
+        # 检查denoise_fn是否支持条件
+        self.has_cond = hasattr(denoise_fn, 'has_cond') and denoise_fn.has_cond
+
         if vqgan_ckpt:
             self.vqgan = VQGAN.load_from_checkpoint(vqgan_ckpt).cuda()
             self.vqgan.eval()
+            # 冻结VQGAN参数
+            for param in self.vqgan.parameters():
+                param.requires_grad = False
         else:
             self.vqgan = None
 
@@ -779,59 +993,43 @@ class GaussianDiffusion(nn.Module):
         self.num_timesteps = int(timesteps)
         self.loss_type = loss_type
 
-        # register buffer helper function that casts float64 to float32
-
-        def register_buffer(name, val): return self.register_buffer(
-            name, val.to(torch.float32))
+        # register buffer helper function
+        def register_buffer(name, val): 
+            return self.register_buffer(name, val.to(torch.float32))
 
         register_buffer('betas', betas)
         register_buffer('alphas_cumprod', alphas_cumprod)
         register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
-
         register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
-        register_buffer('sqrt_one_minus_alphas_cumprod',
-                        torch.sqrt(1. - alphas_cumprod))
-        register_buffer('log_one_minus_alphas_cumprod',
-                        torch.log(1. - alphas_cumprod))
-        register_buffer('sqrt_recip_alphas_cumprod',
-                        torch.sqrt(1. / alphas_cumprod))
-        register_buffer('sqrt_recipm1_alphas_cumprod',
-                        torch.sqrt(1. / alphas_cumprod - 1))
+        register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
+        register_buffer('log_one_minus_alphas_cumprod', torch.log(1. - alphas_cumprod))
+        register_buffer('sqrt_recip_alphas_cumprod', torch.sqrt(1. / alphas_cumprod))
+        register_buffer('sqrt_recipm1_alphas_cumprod', torch.sqrt(1. / alphas_cumprod - 1))
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
-
-        posterior_variance = betas * \
-            (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
-
-        # above: equal to 1. / (1. / (1. - alpha_cumprod_tm1) + alpha_t / beta_t)
+        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
 
         register_buffer('posterior_variance', posterior_variance)
-
-        # below: log calculation clipped because the posterior variance is 0 at the beginning of the diffusion chain
-
-        register_buffer('posterior_log_variance_clipped',
-                        torch.log(posterior_variance.clamp(min=1e-20)))
-        register_buffer('posterior_mean_coef1', betas *
-                        torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
-        register_buffer('posterior_mean_coef2', (1. - alphas_cumprod_prev)
-                        * torch.sqrt(alphas) / (1. - alphas_cumprod))
+        register_buffer('posterior_log_variance_clipped', 
+                       torch.log(posterior_variance.clamp(min=1e-20)))
+        register_buffer('posterior_mean_coef1', betas * 
+                       torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod))
+        register_buffer('posterior_mean_coef2', (1. - alphas_cumprod_prev) * 
+                       torch.sqrt(alphas) / (1. - alphas_cumprod))
 
         # text conditioning parameters
-
         self.text_use_bert_cls = text_use_bert_cls
 
-        # dynamic thresholding when sampling
-
+        # dynamic thresholding
         self.use_dynamic_thres = use_dynamic_thres
         self.dynamic_thres_percentile = dynamic_thres_percentile
 
     def q_mean_variance(self, x_start, t):
         mean = extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
         variance = extract(1. - self.alphas_cumprod, t, x_start.shape)
-        log_variance = extract(
-            self.log_one_minus_alphas_cumprod, t, x_start.shape)
+        log_variance = extract(self.log_one_minus_alphas_cumprod, t, x_start.shape)
         return mean, variance, log_variance
 
     def predict_start_from_noise(self, x_t, t, noise):
@@ -846,14 +1044,19 @@ class GaussianDiffusion(nn.Module):
             extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
         )
         posterior_variance = extract(self.posterior_variance, t, x_t.shape)
-        posterior_log_variance_clipped = extract(
-            self.posterior_log_variance_clipped, t, x_t.shape)
+        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def p_mean_variance(self, x, t, clip_denoised: bool, cond=None, cond_scale=1.):
-        x_recon = self.predict_start_from_noise(
-            x, t=t, noise=self.denoise_fn.forward_with_cond_scale(x, t, cond=cond, cond_scale=cond_scale))
-    
+        # 使用条件缩放的前向传播
+        if self.has_cond and cond is not None and hasattr(self.denoise_fn, 'forward_with_cond_scale'):
+            predicted_noise = self.denoise_fn.forward_with_cond_scale(
+                x, t, cond=cond, cond_scale=cond_scale
+            )
+        else:
+            predicted_noise = self.denoise_fn(x, t, cond=cond)
+
+        x_recon = self.predict_start_from_noise(x, t=t, noise=predicted_noise)
 
         if clip_denoised:
             s = 1.
@@ -863,11 +1066,9 @@ class GaussianDiffusion(nn.Module):
                     self.dynamic_thres_percentile,
                     dim=-1
                 )
-
                 s.clamp_(min=1.)
                 s = s.view(-1, *((1,) * (x_recon.ndim - 1)))
 
-            # clip by threshold, depending on whether static or dynamic
             x_recon = x_recon.clamp(-s, s) / s
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
@@ -881,143 +1082,150 @@ class GaussianDiffusion(nn.Module):
             x=x, t=t, clip_denoised=clip_denoised, cond=cond, cond_scale=cond_scale)
         noise = torch.randn_like(x)
         # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b,
-                                                      *((1,) * (len(x.shape) - 1)))
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
         return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
     @torch.inference_mode()
-    def p_sample_loop(self, shape, cond=None, cond_scale=1.):
+    def p_sample_loop(self, shape, cond=None, cond_scale=1., return_intermediates=False):
         device = self.betas.device
-
         b = shape[0]
+        
+        # 初始化噪声
         img = torch.randn(shape, device=device)
+        
+        if return_intermediates:
+            intermediates = []
 
+        # 逐步去噪
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
-            img = self.p_sample(img, torch.full(
-                (b,), i, device=device, dtype=torch.long), cond=cond, cond_scale=cond_scale)
+            img = self.p_sample(
+                img, 
+                torch.full((b,), i, device=device, dtype=torch.long), 
+                cond=cond, 
+                cond_scale=cond_scale
+            )
+            
+            if return_intermediates:
+                intermediates.append(img.clone())
 
+        if return_intermediates:
+            return img, intermediates
         return img
 
     @torch.inference_mode()
-    def sample(self, cond=None, cond_scale=1., batch_size=16):
+    def sample(self, cond=None, cond_scale=1., batch_size=16, return_intermediates=False):
         device = next(self.denoise_fn.parameters()).device
 
-        if is_list_str(cond):
-            cond = bert_embed(tokenize(cond)).to(device)
-        elif torch.is_tensor(cond):
-        # 如果已经是张量(如CLIP编码的特征)，确保在正确的设备上
-            cond = cond.to(device)
+        # 处理条件
+        if cond is not None:
+            if is_list_str(cond):
+                # 如果是字符串列表，使用BERT编码（向后兼容）
+                cond = bert_embed(tokenize(cond)).to(device)
+            elif torch.is_tensor(cond):
+                # 如果已经是张量(如CLIP编码的特征)，确保在正确的设备上
+                cond = cond.to(device)
+            batch_size = cond.shape[0]
 
-        batch_size = cond.shape[0] if exists(cond) else batch_size
+        # 获取采样形状
         image_size = self.image_size
         channels = self.channels
         num_frames = self.num_frames
-        _sample = self.p_sample_loop(
-            (batch_size, channels, num_frames, image_size, image_size), cond=cond, cond_scale=cond_scale)
+        
+        sample_shape = (batch_size, channels, num_frames, image_size, image_size)
+        
+        # 采样
+        sample = self.p_sample_loop(
+            sample_shape, 
+            cond=cond, 
+            cond_scale=cond_scale,
+            return_intermediates=return_intermediates
+        )
 
+        # 如果使用VQGAN，进行解码
         if isinstance(self.vqgan, VQGAN):
-            # denormalize TODO: Remove eventually
-            _sample = (((_sample + 1.0) / 2.0) * (self.vqgan.codebook.embeddings.max() -
-                                                  self.vqgan.codebook.embeddings.min())) + self.vqgan.codebook.embeddings.min()
+            if return_intermediates:
+                final_sample, intermediates = sample
+                # 对最终样本进行VQGAN解码
+                final_sample = self._vqgan_decode(final_sample)
+                return final_sample, intermediates
+            else:
+                sample = self._vqgan_decode(sample)
 
-            _sample = self.vqgan.decode(_sample, quantize=True)
-        else:
-            unnormalize_img(_sample)
+        return sample
 
-        return _sample
-
-    @torch.inference_mode()
-    def interpolate(self, x1, x2, t=None, lam=0.5):
-        b, *_, device = *x1.shape, x1.device
-        t = default(t, self.num_timesteps - 1)
-
-        assert x1.shape == x2.shape
-
-        t_batched = torch.stack([torch.tensor(t, device=device)] * b)
-        xt1, xt2 = map(lambda x: self.q_sample(x, t=t_batched), (x1, x2))
-
-        img = (1 - lam) * xt1 + lam * xt2
-        for i in tqdm(reversed(range(0, t)), desc='interpolation sample time step', total=t):
-            img = self.p_sample(img, torch.full(
-                (b,), i, device=device, dtype=torch.long))
-
-        return img
+    def _vqgan_decode(self, sample):
+        """VQGAN解码辅助函数"""
+        # 反归一化
+        sample = ((sample + 1.0) / 2.0) * (
+            self.vqgan.codebook.embeddings.max() - self.vqgan.codebook.embeddings.min()
+        ) + self.vqgan.codebook.embeddings.min()
+        
+        # VQGAN解码
+        sample = self.vqgan.decode(sample, quantize=True)
+        return sample
 
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         return (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
-            extract(self.sqrt_one_minus_alphas_cumprod,
-                    t, x_start.shape) * noise
+            extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
 
     def p_losses(self, x_start, t, cond=None, noise=None, **kwargs):
         b, c, f, h, w, device = *x_start.shape, x_start.device
         noise = default(noise, lambda: torch.randn_like(x_start))
 
+        # 添加噪声
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-
-        #bert这部分都可删掉🚧🚧
-        if is_list_str(cond):
-            cond = bert_embed(
-                tokenize(cond), return_cls_repr=self.text_use_bert_cls)
-            cond = cond.to(device)
-        #we already have the clip text feature
-        elif torch.is_tensor(cond):
-            print("❓❓cond in p_lossed of forward:",cond)
-            print("❓❓cond shape in p_lossed of forward:",cond.shape)
-            pass  # 已经是张量，无需处理
-        
-        ##let the cond guide the unet3d  next step we need to fix the unet3d with the cond🚧🚧❌
+        # 处理文本条件
+        if cond is not None:
+            if is_list_str(cond):
+                # BERT编码（向后兼容）
+                cond = bert_embed(tokenize(cond), return_cls_repr=self.text_use_bert_cls)
+                cond = cond.to(device)
+            elif torch.is_tensor(cond):
+                # 已经是张量，确保在正确设备上
+                cond = cond.to(device)
+                
+        # 预测噪声
         x_recon = self.denoise_fn(x_noisy, t, cond=cond, **kwargs)
 
-
-
+        # 计算损失
         if self.loss_type == 'l1':
             loss = F.l1_loss(noise, x_recon)
         elif self.loss_type == 'l2':
             loss = F.mse_loss(noise, x_recon)
         else:
-            raise NotImplementedError()
+            raise NotImplementedError(f"Loss type {self.loss_type} not implemented")
 
         return loss
 
-    # trainer 中调用self.model call 这个forward函数
-    # 在GaussianDiffusion类中修改forward方法 适配所有进入网络的大小
     def forward(self, x, *args, **kwargs):
+        """
+        训练时的前向传播
+        """
         if isinstance(self.vqgan, VQGAN):
             with torch.no_grad():
-                # 记录原始形状
-                orig_shape = x.shape
                 # VQGAN编码
                 x = self.vqgan.encode(x, quantize=False, include_embeddings=True)
-                # 记录编码后的形状
-                encoded_shape = x.shape
-                print(f"VQGAN编码前: {orig_shape}, 编码后: {encoded_shape}")
                 
                 # 归一化处理
                 x = ((x - self.vqgan.codebook.embeddings.min()) /
-                    (self.vqgan.codebook.embeddings.max() -
-                    self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
+                    (self.vqgan.codebook.embeddings.max() - self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
         else:
-            print("未使用VQGAN编码")
             x = normalize_img(x)
 
-        # 获取实际尺寸
+        # 获取批次大小和设备
         b, c, f, h, w = x.shape
         device = x.device
-        # 不再严格检查形状，而是记录并使用当前形状
-        print(f"处理形状: [b={b}, c={c}, f={f}, h={h}, w={w}]")
         
-        # 如果你仍需要某种形式的检查，可以使用更灵活的方式
-        # 例如，只检查通道数而不检查空间维度
-        assert c == self.channels, f"通道数不匹配: 期望 {self.channels}, 实际 {c}"
-        
+        # 随机时间步
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        
+        # 计算损失
         return self.p_losses(x, t, *args, **kwargs)
-
 # trainer class
 
 
@@ -1146,30 +1354,38 @@ class Trainer(object):
         num_sample_rows=1,
         max_grad_norm=None,
         num_workers=20,
+        cond_scale=2.0,  # 添加条件缩放参数
     ):
         super().__init__()
         
-        # import clip model 
+        # 设备设置
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # CLIP模型初始化
         self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
-        #freeze the parms
+        # 冻结CLIP参数
         for param in self.clip_model.parameters():
             param.requires_grad = False
+        self.clip_model.eval()
         
+        self.model = diffusion_model
+        self.cfg = cfg
+        self.cond_scale = cond_scale
         
-        self.model = diffusion_model  ##instance GaussianDiffusion class
+        # EMA模型
         self.ema = EMA(ema_decay)
         self.ema_model = copy.deepcopy(self.model)
         self.update_ema_every = update_ema_every
-
         self.step_start_ema = step_start_ema
+        
+        # 训练参数
         self.save_and_sample_every = save_and_sample_every
-
         self.batch_size = train_batch_size
         self.image_size = diffusion_model.image_size
         self.gradient_accumulate_every = gradient_accumulate_every
         self.train_num_steps = train_num_steps
-
+        
+        # 数据相关
         image_size = diffusion_model.image_size
         channels = diffusion_model.channels
         num_frames = diffusion_model.num_frames
@@ -1179,26 +1395,33 @@ class Trainer(object):
             self.ds = dataset
         else:
             assert folder is not None, 'Provide a folder path to the dataset'
-            self.ds = Dataset(folder, image_size,
-                              channels=channels, num_frames=num_frames)
-        dl = DataLoader(self.ds, batch_size=train_batch_size,
-                        shuffle=True, pin_memory=True, num_workers=num_workers)
+            self.ds = Dataset(folder, image_size, channels=channels, num_frames=num_frames)
+            
+        dl = DataLoader(
+            self.ds, 
+            batch_size=train_batch_size,
+            shuffle=True, 
+            pin_memory=True, 
+            num_workers=num_workers,
+            drop_last=True  # 确保批次大小一致
+        )
 
         self.len_dataloader = len(dl)
         self.dl = cycle(dl)
 
-        print(f'found {len(self.ds)} videos as gif files at {folder}')
-        assert len(
-            self.ds) > 0, 'need to have at least 1 video to start training (although 1 is not great, try 100k)'
+        print(f'Found {len(self.ds)} samples in dataset')
+        assert len(self.ds) > 0, 'Dataset must contain at least 1 sample'
 
+        # 优化器
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
-
         self.step = 0
 
+        # 混合精度训练
         self.amp = amp
         self.scaler = GradScaler(enabled=amp)
         self.max_grad_norm = max_grad_norm
 
+        # 采样和保存
         self.num_sample_rows = num_sample_rows
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(exist_ok=True, parents=True)
@@ -1219,54 +1442,76 @@ class Trainer(object):
             'step': self.step,
             'model': self.model.state_dict(),
             'ema': self.ema_model.state_dict(),
-            'scaler': self.scaler.state_dict()
+            'scaler': self.scaler.state_dict(),
+            'cfg': self.cfg
         }
         torch.save(data, str(self.results_folder / f'model-{milestone}.pt'))
+        print(f'Saved checkpoint at step {self.step}')
 
     def load(self, milestone, map_location=None, **kwargs):
         if milestone == -1:
-            all_milestones = [int(p.stem.split('-')[-1])
-                              for p in Path(self.results_folder).glob('**/*.pt')]
-            assert len(
-                all_milestones) > 0, 'need to have at least one milestone to load from latest checkpoint (milestone == -1)'
+            all_milestones = [int(p.stem.split('-')[-1]) 
+                             for p in Path(self.results_folder).glob('**/*.pt')]
+            assert len(all_milestones) > 0, 'No checkpoints found'
             milestone = max(all_milestones)
 
-        if map_location:
-            data = torch.load(milestone, map_location=map_location)
+        if isinstance(milestone, str):
+            data = torch.load(milestone, map_location=map_location or self.device)
         else:
-            data = torch.load(milestone)
+            data = torch.load(str(self.results_folder / f'model-{milestone}.pt'), 
+                            map_location=map_location or self.device)
 
         self.step = data['step']
         self.model.load_state_dict(data['model'], **kwargs)
         self.ema_model.load_state_dict(data['ema'], **kwargs)
         self.scaler.load_state_dict(data['scaler'])
+        print(f'Loaded checkpoint from step {self.step}')
 
-
+    def encode_text(self, descriptions):
+        """使用CLIP编码文本描述"""
+        with torch.no_grad():
+            # 处理可能的批次大小不一致
+            if isinstance(descriptions, (list, tuple)):
+                # 截断或填充到合适长度
+                text_tokens = clip.tokenize(descriptions, truncate=True).to(self.device)
+            else:
+                text_tokens = clip.tokenize([descriptions], truncate=True).to(self.device)
+                
+            text_features = self.clip_model.encode_text(text_tokens)
+            
+            # L2归一化
+            text_features = text_features / text_features.norm(dim=1, keepdim=True)
+            
+            return text_features.float()  # 确保数据类型
 
     def train(
         self,
         prob_focus_present=0.,
         focus_present_mask=None,
-        log_fn=noop
+        log_fn=noop,
+        wandb_logger=None
     ):
         assert callable(log_fn)
 
+        # 训练模式
+        self.model.train()
+        
+        device = self.device
+
         while self.step < self.train_num_steps:
+            total_loss = 0.
+            
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dl)
-                data = batch['data'].cuda()
-                description = batch['description']
-                print("trainer data ✅✅✅✅✅:", data)
-                print("trainer description ✅✅✅✅✅:", description)
                 
-                # use clip to embedd 
-                with torch.no_grad():  # 不需要计算梯度
-                    text_tokens = clip.tokenize(description).to(self.device)
-                    text_features = self.clip_model.encode_text(text_tokens)
-                    
-                    # 可选：归一化特征向量 🚧 
-                    text_features = text_features / text_features.norm(dim=1, keepdim=True)
+                # 数据准备
+                data = batch['data'].to(device, non_blocking=True)
+                descriptions = batch['description']
                 
+                # 编码文本
+                text_features = self.encode_text(descriptions)
+                
+                # 前向传播
                 with autocast(enabled=self.amp):
                     loss = self.model(
                         data,
@@ -1274,81 +1519,130 @@ class Trainer(object):
                         prob_focus_present=prob_focus_present,
                         focus_present_mask=focus_present_mask
                     )
+                    
+                    loss = loss / self.gradient_accumulate_every
 
-                    self.scaler.scale(
-                        loss / self.gradient_accumulate_every).backward()
+                # 反向传播
+                self.scaler.scale(loss).backward()
+                total_loss += loss.item()
 
-                print(f'{self.step}: {loss.item()}')
+            # 梯度裁剪
+            if self.max_grad_norm is not None:
+                self.scaler.unscale_(self.opt)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
-            log = {'loss': loss.item()}
+            # 优化器步骤
+            self.scaler.step(self.opt)
+            self.scaler.update()
+            self.opt.zero_grad()
 
-            # ... 梯度裁剪和优化器步骤 ...
+            # 日志记录
+            log_dict = {'loss': total_loss, 'step': self.step}
+            
+            if self.step % 50 == 0:
+                print(f'Step {self.step}: Loss = {total_loss:.6f}')
+                
+            # Wandb日志
+            if wandb_logger is not None:
+                wandb_logger.log(log_dict)
 
+            # EMA更新
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
 
+            # 保存和采样
             if self.step != 0 and self.step % self.save_and_sample_every == 0:
                 self.ema_model.eval()
                 
-                # 为采样准备一些描述
-                # 获取新的批次以获取描述
-                sample_batch = next(self.dl)
-                sample_descriptions = sample_batch['description'][:self.num_sample_rows**2]
-                
                 with torch.no_grad():
-                    # 使用CLIP编码描述
-                    text_tokens = clip.tokenize(sample_descriptions).to(self.device)
-                    text_features = self.clip_model.encode_text(text_tokens)
-                    text_features = text_features / text_features.norm(dim=1, keepdim=True)
-                    
                     milestone = self.step // self.save_and_sample_every
+                    
+                    # 准备采样用的文本描述
+                    sample_batch = next(self.dl)
+                    sample_descriptions = sample_batch['description'][:self.num_sample_rows**2]
+                    
+                    # 编码采样文本
+                    sample_text_features = self.encode_text(sample_descriptions)
+                    
+                    # 采样
                     num_samples = min(len(sample_descriptions), self.num_sample_rows**2)
                     
-                    # 生成样本
                     all_videos_list = []
-                    for i in range(num_samples):
-                        sample = self.ema_model.sample(cond=text_features[i:i+1], batch_size=1)
-                        all_videos_list.append(sample)
+                    for i in range(0, num_samples, 1):  # 逐个采样以避免内存问题
+                        end_idx = min(i + 1, num_samples)
+                        batch_text_features = sample_text_features[i:end_idx]
+                        
+                        samples = self.ema_model.sample(
+                            cond=batch_text_features, 
+                            cond_scale=self.cond_scale,
+                            batch_size=batch_text_features.shape[0]
+                        )
+                        all_videos_list.append(samples)
                     
-                    # 如果样本数量不足，生成额外样本
-                    extra_needed = self.num_sample_rows**2 - len(all_videos_list)
-                    if extra_needed > 0:
-                        extra_samples = self.ema_model.sample(batch_size=extra_needed)
-                        all_videos_list.append(extra_samples)
+                    # 如果样本不足，生成无条件样本补充
+                    if len(all_videos_list) == 0:
+                        samples = self.ema_model.sample(batch_size=self.num_sample_rows**2)
+                        all_videos_list = [samples]
                     
-                    all_videos_list = torch.cat(all_videos_list, dim=0)
+                    all_videos = torch.cat(all_videos_list, dim=0)
+                    
+                    # 确保有足够的样本
+                    needed_samples = self.num_sample_rows**2
+                    if all_videos.shape[0] < needed_samples:
+                        # 重复样本或生成更多
+                        repeat_factor = (needed_samples + all_videos.shape[0] - 1) // all_videos.shape[0]
+                        all_videos = all_videos.repeat(repeat_factor, 1, 1, 1, 1)[:needed_samples]
 
-                all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
+                    # 添加边框用于可视化
+                    all_videos = F.pad(all_videos, (2, 2, 2, 2))
 
-                # ... 其余的可视化和保存代码不变 ...
-                one_gif = rearrange(
-                    all_videos_list, '(i j) c f h w -> c f (i h) (j w)', i=self.num_sample_rows)
-                video_path = str(self.results_folder / str(f'{milestone}.gif'))
-                video_tensor_to_gif(one_gif, video_path)
-                log = {**log, 'sample': video_path}
+                    # 创建网格可视化
+                    one_gif = rearrange(
+                        all_videos, '(i j) c f h w -> c f (i h) (j w)', 
+                        i=self.num_sample_rows
+                    )
+                    
+                    # 保存GIF
+                    video_path = str(self.results_folder / f'sample-{milestone}.gif')
+                    video_tensor_to_gif(one_gif, video_path)
 
-                # Selects one random 2D image from each 3D Image
-                B, C, D, H, W = all_videos_list.shape
-                frame_idx = torch.randint(0, D, [B]).cuda()
-                frame_idx_selected = frame_idx.reshape(
-                    -1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
-                frames = torch.gather(
-                    all_videos_list, 2, frame_idx_selected).squeeze(2)
+                    # 保存单帧图像
+                    B, C, D, H, W = all_videos.shape
+                    frame_idx = torch.randint(0, D, [B]).to(device)
+                    frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
+                    frames = torch.gather(all_videos, 2, frame_idx_selected).squeeze(2)
 
-                path = str(self.results_folder /
-                        f'sample-{milestone}.jpg')
-                plt.figure(figsize=(50, 50))
-                cols = 5
-                for num, frame in enumerate(frames.cpu()):
-                    plt.subplot(
-                        math.ceil(len(frames) / cols), cols, num + 1)
-                    plt.axis('off')
-                    plt.imshow(frame[0], cmap='gray')
-                    plt.savefig(path)
+                    # 保存图像网格
+                    image_path = str(self.results_folder / f'sample-{milestone}.png')
+                    plt.figure(figsize=(15, 15))
+                    cols = self.num_sample_rows
+                    for num, frame in enumerate(frames.cpu()):
+                        plt.subplot(self.num_sample_rows, cols, num + 1)
+                        plt.axis('off')
+                        if frame.shape[0] == 1:  # 灰度图像
+                            plt.imshow(frame[0], cmap='gray')
+                        else:  # 彩色图像
+                            plt.imshow(frame.permute(1, 2, 0))
+                        
+                        # 添加文本描述
+                        if num < len(sample_descriptions):
+                            plt.title(sample_descriptions[num][:50] + '...', fontsize=8)
+                    
+                    plt.tight_layout()
+                    plt.savefig(image_path, dpi=100, bbox_inches='tight')
+                    plt.close()
 
-                self.save(milestone)
+                    # 保存检查点
+                    self.save(milestone)
+                    
+                    log_dict.update({
+                        'sample_gif': video_path,
+                        'sample_image': image_path
+                    })
 
-            log_fn(log)
+                self.model.train()  # 回到训练模式
+
+            log_fn(log_dict)
             self.step += 1
 
-        print('training completed')
+        print('Training completed!')

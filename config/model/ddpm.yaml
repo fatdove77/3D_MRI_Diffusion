@@ -8,8 +8,8 @@ diffusion_num_channels: null
 dim_mults: [1, 2, 4, 8]
 
 # 数据路径
-csv_path: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/data/ADNI/ADNI.csv
-results_folder: /home/jz97/MRI_Diffusion/repo/3D_MRI_Diffusion/checkpoints/ddpm/
+csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/ADNI.csv
+results_folder: /home/jz97/mri_diffusion/3D_MRI_Diffusion/checkpoints/ddpm/
 results_folder_postfix: 'multi_gpu'
 
 # 多GPU训练配置

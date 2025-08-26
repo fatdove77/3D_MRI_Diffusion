@@ -1234,14 +1234,15 @@ class GaussianDiffusion(nn.Module):
 
         return loss
     
-    with torch.no_grad():
-        x_latent = self.vqgan.encode(x, quantize=False, include_embeddings=True)
-        print('1️⃣1️⃣VQGAN latent:', x_latent.shape) 
-    
+   
     def forward(self, x, *args, **kwargs):
         """
         训练时的前向传播
+        
         """
+        with torch.no_grad():
+            x_latent = self.vqgan.encode(x, quantize=False, include_embeddings=True)
+            print('1️⃣1️⃣VQGAN latent:', x_latent.shape) 
         if isinstance(self.vqgan, VQGAN):
             with torch.no_grad():
                 # VQGAN编码

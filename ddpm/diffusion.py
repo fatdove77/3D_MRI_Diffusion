@@ -31,6 +31,8 @@ from torch.utils.data import Dataset, DataLoader
 from vq_gan_3d.model.vqgan import VQGAN
 
 import matplotlib.pyplot as plt
+from dataset import CustomDataset # new dataloader
+
 
 # helpers functions
 
@@ -573,8 +575,8 @@ class AdaptiveCrossAttentionBlock(nn.Module):
         )
         
         # 层归一化
-        self.norm1 = LayerNorm(dim)
-        self.norm2 = LayerNorm(dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
         
     def _chunk_forward(self, x_flat, context_proj):
         """分块处理大尺寸图像"""
@@ -680,7 +682,7 @@ class Unet3D(nn.Module):
         cond_dim=512,
         out_dim=None,
         dim_mults=(1, 2, 4, 8),
-        channels=3,
+        channels=8,
         attn_heads=8,
         attn_dim_head=32,
         use_bert_text_cond=False,
@@ -804,10 +806,10 @@ class Unet3D(nn.Module):
 
         out_dim = default(out_dim, channels)
         self.final_conv = nn.Sequential(
-            block_klass(dim * 2, dim),
-            nn.Conv3d(dim, out_dim, 1)
+            block_klass(init_dim * 2, init_dim),
+            nn.Conv3d(init_dim, out_dim, 1)
         )
-# gaussian diffusion trainer class
+
     def forward(
     self,
     x,
@@ -822,6 +824,11 @@ class Unet3D(nn.Module):
     # time: [b] - 时间步
     # cond: [b, context_dim] 或 [b, seq_len, context_dim] - 文本条件
     # """
+    
+        # gaussian diffusion trainer class
+        assert x.dim() == 5 and x.shape[1] == self.channels, \
+            f"U-Net expects (B,{self.channels},D,H,W), got {tuple(x.shape)}"
+       
         assert not (self.has_cond and not exists(cond)), 'cond must be passed in if cond_dim specified'
         
         batch, device = x.shape[0], x.device
@@ -983,7 +990,7 @@ class GaussianDiffusion(nn.Module):
         image_size,
         num_frames,
         text_use_bert_cls=False,
-        channels=3,
+        channels=8,
         timesteps=1000,
         loss_type='l1',
         use_dynamic_thres=False,
@@ -1226,7 +1233,11 @@ class GaussianDiffusion(nn.Module):
             raise NotImplementedError(f"Loss type {self.loss_type} not implemented")
 
         return loss
-
+    
+    with torch.no_grad():
+        x_latent = self.vqgan.encode(x, quantize=False, include_embeddings=True)
+        print('1️⃣1️⃣VQGAN latent:', x_latent.shape) 
+    
     def forward(self, x, *args, **kwargs):
         """
         训练时的前向传播
@@ -1363,7 +1374,7 @@ class Trainer(object):
         diffusion_model,   
         cfg,
         folder=None,
-        dataset=None,
+        dataset=CustomDataset,
         *,
         ema_decay=0.995,
         num_frames=16,
@@ -1559,7 +1570,7 @@ class Trainer(object):
                     
                     all_videos_list = torch.cat(all_videos_list, dim=0)
 
-                all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
+                all_videos_list = F.pad(all_videos_list, (2, 2,   2, 2,   0, 0))
 
                 # ... 其余的可视化和保存代码不变 ...
                 one_gif = rearrange(

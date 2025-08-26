@@ -26,9 +26,9 @@ loss_type: l1
 objective: pred_x0
 
 # 训练配置  
-train_num_steps: 100000
+train_num_steps: 1000
 gradient_accumulate_every: 2
-save_and_sample_every: 2000
+save_and_sample_every: 20
 ema_decay: 0.995
 amp: true                  # 开启混合精度训练
 num_sample_rows: 2

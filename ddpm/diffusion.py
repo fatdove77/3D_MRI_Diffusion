@@ -1381,7 +1381,7 @@ class Trainer(object):
         num_frames=16,
         train_batch_size=32,
         train_lr=1e-4,
-        train_num_steps=100000,
+        train_num_steps=1000,
         gradient_accumulate_every=2,
         amp=False,
         step_start_ema=2000,

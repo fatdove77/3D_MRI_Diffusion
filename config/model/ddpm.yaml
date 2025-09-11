@@ -1,6 +1,11 @@
 vqgan_ckpt: ./checkpoints/vq_gan/DEFAULT/lightning_logs/version_0/checkpoints/latest_checkpoint-v2.ckpt 
 
 
+# 文本编码器配置
+text_encoder: biobert  # 使用BioBERT而不是CLIP
+biobert_model: dmis-lab/biobert-v1.1  # HuggingFace模型路径
+text_max_length: 256  # BioBERT支持更长的序列
+
 # 这些参数会根据VQ-GAN编码后的实际尺寸动态设置
 diffusion_img_size: null
 diffusion_depth_size: null  
@@ -8,7 +13,7 @@ diffusion_num_channels: null
 dim_mults: [1, 2, 4, 8]
 
 # 数据路径
-csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/ADNI/ADNI.csv
+csv_path: /home/jz97/mri_diffusion/3D_MRI_Diffusion/data/data.csv
 results_folder: /home/jz97/mri_diffusion/3D_MRI_Diffusion/checkpoints/ddpm/
 results_folder_postfix: 'multi_gpu'
 

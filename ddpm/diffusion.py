@@ -1585,7 +1585,7 @@ class Trainer(object):
                 video_path = str(self.results_folder / f'{milestone}.gif')
                 
                 # 保存为GIF
-                from ddpm.diffusion import video_tensor_to_gif
+                # from ddpm.diffusion import video_tensor_to_gif
                 video_tensor_to_gif(one_gif, video_path)
                 log = {**log, 'sample': video_path}
 

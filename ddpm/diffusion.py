@@ -12,7 +12,7 @@ from PIL import Image
 from torch import nn, einsum
 import torch.nn.functional as F
 from functools import partial
-from ddpm.diffusion import video_tensor_to_gif 
+# from ddpm.diffusion import video_tensor_to_gif 
 
 from torch.utils import data
 from pathlib import Path

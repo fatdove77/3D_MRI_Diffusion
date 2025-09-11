@@ -50,3 +50,16 @@ rotary-embedding-torch
 
 wandb
 monai
+
+
+# BioBERT相关依赖
+transformers>=4.30.0  # HuggingFace Transformers库
+tokenizers>=0.13.0    # 快速分词器
+sentencepiece         # 某些模型可能需要
+
+# 可选：如果要使用其他医学BERT变体
+# scibert  # 如果使用SciBERT
+# biobert-pytorch  # 另一个BioBERT实现
+
+# 移除或标记为可选
+# clip  # 不再必需，但可以保留作为备选

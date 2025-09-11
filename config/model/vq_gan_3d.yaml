@@ -18,7 +18,7 @@ embedding_dim: 16             # 足够的表示能力
 n_codes: 4096                 # 适中的码本大小
 n_hiddens: 32                 # 比原来的16增加，提升质量
 lr: 3e-4
-downsample: [2, 2, 2]         # 保持较高分辨率，重要！
+downsample: [4, 4, 4]         # 保持较高分辨率，重要！
 disc_channels: 64
 disc_layers: 3
 discriminator_iter_start: 8000  # 适中的启动时机
